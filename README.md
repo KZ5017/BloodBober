@@ -1,0 +1,77 @@
+# Bober Edition - BloodHound Attack Path Analyzer
+
+`bh-analyzer-bober` is a small local Flask web application for reviewing BloodHound ZIP exports, highlighting interesting ACLs, delegation findings, roasting opportunities, and attack paths.
+
+## Credits
+
+Project creator: [MRXH4X](https://github.com/MRXH4X)
+
+Special thanks for the Bober Edition version.
+
+## Install
+
+Install the wheel with `pipx`:
+
+```bash
+pipx install dist/bh_analyzer_bober-1.4.0-py3-none-any.whl
+```
+
+For the optional production WSGI server dependency:
+
+```bash
+pipx inject bh-analyzer-bober waitress
+```
+
+## Usage
+
+Start the app:
+
+```bash
+bh-analyzer
+```
+
+By default it listens on `127.0.0.1:5000` and opens the browser automatically.
+
+Useful options:
+
+```bash
+bh-analyzer --host 127.0.0.1 --port 5000
+bh-analyzer --no-browser
+bh-analyzer --debug
+```
+
+Then load a BloodHound ZIP file in the web UI and mark owned principals in the sidebar.
+
+## Build
+
+If Python build tooling is available:
+
+```bash
+python -m build --wheel
+```
+
+The project also includes a prebuilt wheel under `dist/` for direct `pipx` installation.
+
+## License
+
+MIT License
+
+Copyright (c) 2026
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files, to deal in the Software
+without restriction, including without limitation the rights to use, copy,
+modify, merge, publish, distribute, sublicense, and/or sell copies of the
+Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

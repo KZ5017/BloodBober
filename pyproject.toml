@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bh-analyzer-bober"
+version = "1.4.0"
+description = "Bober Edition - BloodHound Attack Path Analyzer"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "flask>=3.0.0",
+]
+
+[project.optional-dependencies]
+production = [
+    "waitress>=3.0.0",
+]
+
+[project.scripts]
+bh-analyzer = "bh_analyzer.__main__:main"
+
+[tool.setuptools]
+packages = ["bh_analyzer"]
