@@ -44,7 +44,21 @@ Then load a BloodHound ZIP file in the web UI and mark owned principals in the s
 
 ## Build
 
-If Python build tooling is available:
+On Windows/PowerShell, use the helper script. It keeps Python temporary files
+inside the project directory and builds without an isolated temp environment:
+
+```powershell
+.\scripts\build-wheel.ps1
+```
+
+If the build tooling is missing from the virtual environment:
+
+```powershell
+.\scripts\build-wheel.ps1 -InstallDeps
+```
+
+Generic build command, if your environment already handles Python temp
+directories cleanly:
 
 ```bash
 python -m build --wheel
