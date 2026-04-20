@@ -46,7 +46,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$Wheel = Join-Path $Root "dist\bh_analyzer_bober-1.4.0-py3-none-any.whl"
+$Wheel = Join-Path $Root "dist\bh_analyzer_bober-1.4.1-py3-none-any.whl"
 if (Test-Path $Wheel) {
     icacls $Wheel /grant "${env:USERNAME}:(F)" | Out-Null
     if ($LASTEXITCODE -ne 0) {

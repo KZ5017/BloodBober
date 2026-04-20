@@ -1404,6 +1404,7 @@ tr:hover td{background:rgba(0,212,255,.02)}
   position:absolute; top:10px; right:10px; width:280px; z-index:50;
   background:rgba(8,15,24,.92); border:1px solid var(--border2);
   border-radius:7px; overflow:hidden; backdrop-filter:blur(8px);
+  max-height:calc(100% - 20px); display:flex; flex-direction:column;
   transition:opacity .2s, transform .2s;
 }
 .g-info.hidden { opacity:0; pointer-events:none; transform:translateX(8px); }
@@ -1413,7 +1414,7 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-info-type { font-size:.81em; color:var(--dim2); margin-top:1px; }
 .g-info-body { padding:9px 13px; display:flex; flex-direction:column; gap:5px; }
 .g-info-row { display:flex; justify-content:space-between; font-size:0.80em; }
-.g-info-edges { padding:0 13px 10px; display:flex; flex-direction:column; gap:3px; }
+.g-info-edges { padding:0 13px 10px; display:flex; flex-direction:column; gap:3px; flex:1 1 auto; overflow-y:auto; min-height:0; scrollbar-width:thin; scrollbar-color:var(--border2) transparent; }
 .g-edge-row { display:flex; align-items:center; gap:5px; font-size:.87em; padding:2px 5px; border-radius:3px; border:1px solid var(--border); }
 .g-edge-row.clickable { cursor:pointer; transition:border-color .15s, background .15s; }
 .g-edge-row.clickable:hover { border-color:var(--cyan); background:rgba(0,212,255,.06); }
@@ -1483,6 +1484,7 @@ tr:hover td{background:rgba(0,212,255,.02)}
   position:absolute; top:10px; right:10px; width:280px; z-index:50;
   background:rgba(8,15,24,.92); border:1px solid var(--border2);
   border-radius:7px; overflow:hidden; backdrop-filter:blur(8px);
+  max-height:calc(100% - 20px); display:flex; flex-direction:column;
   transition:opacity .2s, transform .2s;
 }
 .g-info.hidden { opacity:0; pointer-events:none; transform:translateX(8px); }
@@ -1492,7 +1494,7 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-info-type { font-size:.81em; color:var(--dim2); margin-top:1px; }
 .g-info-body { padding:9px 13px; display:flex; flex-direction:column; gap:5px; }
 .g-info-row { display:flex; justify-content:space-between; font-size:0.80em; }
-.g-info-edges { padding:0 13px 10px; display:flex; flex-direction:column; gap:3px; }
+.g-info-edges { padding:0 13px 10px; display:flex; flex-direction:column; gap:3px; flex:1 1 auto; overflow-y:auto; min-height:0; scrollbar-width:thin; scrollbar-color:var(--border2) transparent; }
 .g-edge-row { display:flex; align-items:center; gap:5px; font-size:.87em; padding:2px 5px; border-radius:3px; border:1px solid var(--border); }
 .g-edge-row.clickable { cursor:pointer; transition:border-color .15s, background .15s; }
 .g-edge-row.clickable:hover { border-color:var(--cyan); background:rgba(0,212,255,.06); }
@@ -1701,7 +1703,7 @@ tr:hover td{background:rgba(0,212,255,.02)}
 <!-- Edge tooltip — fixed, global -->
 <div class="edge-tip" id="edgeTip"
      onmouseenter="edgeTipPinned=true; if(edgeTipTimer){clearTimeout(edgeTipTimer);edgeTipTimer=null;}"
-     onmouseleave="edgeTipPinned=false; scheduleHideEdgeTip()">
+     onmouseleave="edgeTipPinned=false">
   <div class="edge-tip-hdr">
     <span class="edge-tip-right" id="etRight"></span>
     <span style="font-size:.52em;color:var(--dim2);letter-spacing:1px">each block has its own ⎘ button</span>
@@ -2050,7 +2052,7 @@ function clearObjectSearch() {
   const input = document.getElementById('objectSearch');
   if (input) input.value = '';
   if (S.currentTab === 'overview') renderOverviewDetail();
-  else if (S.currentTab === 'graph') applyGraphSearch();
+  else if (S.currentTab === 'graph') clearGraphSearchPreview();
 }
 
 function renderCurrentTab() {
@@ -2773,7 +2775,7 @@ function initGraphSVG(container) {
       <button class="g-btn" onclick="gZoomBy(1.3)">+</button>
       <button class="g-btn" onclick="gZoomBy(.77)">−</button>
       <button class="g-btn" onclick="gZoomFit()">⊡</button>
-      <button class="g-btn danger" onclick="gClearSel()">✕</button>
+      <button class="g-btn danger" onclick="gClearSel()">Clear all</button>
     </div>
   `);
   gSyncToolbarState();
@@ -2864,8 +2866,8 @@ function initGraphSVG(container) {
   gridPat.append('path').attr('d','M44,0 L0,0 0,44').attr('fill','none').attr('stroke','rgba(0,212,255,.04)').attr('stroke-width',1);
   svg.insert('rect','g').attr('width','100%').attr('height','100%').attr('fill','url(#gGrid)');
 
-  // click on background = deselect
-  svg.on('click', () => { G.lastAct = Date.now(); gClearSel(); });
+  // Keep the current graph focus when clicking empty canvas space.
+  svg.on('click', () => { G.lastAct = Date.now(); hideEdgeTip(); });
 
   G.mode = G.mode || 'all';
   G.initialized = true;
@@ -2885,7 +2887,7 @@ function initGraphSVG(container) {
   // auto-cycle attack paths
   if (G.cycleTimer) clearInterval(G.cycleTimer);
   G.cycleTimer = setInterval(() => {
-    if (G.selNode || Date.now()-G.lastAct < 8000 || !S.paths.length) return;
+    if (G.selNode || gVisualFocusSet().size || Date.now()-G.lastAct < 8000 || !S.paths.length) return;
     G.cycleIdx = (G.cycleIdx+1) % Math.min(S.paths.length, 5);
     const path = S.paths[G.cycleIdx];
     if (!path?.chain) return;
@@ -3001,6 +3003,7 @@ function compactStructureView(nodes, links) {
 
 function drawGraph(nodes, links, container) {
   if (!G.svg) return;
+  hideEdgeTip();
   const root = G.root;
   const W = container.clientWidth  || window.innerWidth  - 290;
   const H = container.clientHeight || window.innerHeight - 48;
@@ -3112,12 +3115,12 @@ function drawGraph(nodes, links, container) {
     .attr('data-pair', d => d._pairKey)
     .attr('fill','none')
     .attr('stroke', d => G_SEV_COLOR[d.sev])
-    .attr('stroke-width', 1.6)
-    .attr('stroke-opacity', d => d.structural ? .38 : .65)
+    .attr('stroke-width', 1.2)
+    .attr('stroke-opacity', .05)
     .attr('stroke-dasharray', d => d.structural ? '4 5' : null)
     .attr('marker-end', d => `url(#gArr${d.sev})`);
 
-  // Invisible wide hit area on top of each edge for easier hover
+  // Invisible wide hit area on top of each edge for click tooltips
   const linkHit = linkLayer.selectAll('path.g-link-hit')
     .data(simLinks).enter().append('path')
     .attr('class','g-link-hit')
@@ -3126,22 +3129,18 @@ function drawGraph(nodes, links, container) {
     .attr('fill','none')
     .attr('stroke','transparent')
     .attr('stroke-width', 14)
-    .style('cursor','crosshair')
-    .on('mouseenter', (e, d) => {
-      // Highlight the real edge
+    .style('cursor','pointer')
+    .on('click', (e, d) => {
+      e.stopPropagation();
+      G.lastAct = Date.now();
+      restorePinnedEdgeVisual();
+      if (G.edgeTipKey === d._key && edgeTipVisible) {
+        hideEdgeTip();
+        return;
+      }
       linkPaths.filter(l => l._key === d._key)
         .attr('stroke-width', 3).attr('stroke-opacity', 1);
       showEdgeTip(e, d);
-    })
-    .on('mousemove', (e, d) => {
-      const tip = document.getElementById('edgeTip');
-      tip.style.left = Math.min(e.clientX+16, window.innerWidth-360)+'px';
-      tip.style.top  = Math.min(e.clientY-10,  window.innerHeight-320)+'px';
-    })
-    .on('mouseleave', (e, d) => {
-      linkPaths.filter(l => l._key === d._key)
-        .attr('stroke-width', 1.6).attr('stroke-opacity', l => l.structural ? .38 : .65);
-      scheduleHideEdgeTip();
     });
 
   const lblLayer = root.append('g');
@@ -3152,7 +3151,7 @@ function drawGraph(nodes, links, container) {
     .attr('data-pair', d => d._pairKey)
     .attr('text-anchor','middle').attr('dominant-baseline','central')
     .attr('font-family','Share Tech Mono,monospace').attr('font-size',11)
-    .attr('fill', d => G_SEV_COLOR[d.sev]).attr('opacity',.65)
+    .attr('fill', d => G_SEV_COLOR[d.sev]).attr('opacity',.04)
     .attr('pointer-events','none').text(d => d.right);
 
   // ── Node layer
@@ -3166,9 +3165,9 @@ function drawGraph(nodes, links, container) {
       .on('drag', (e,d)=>{d.fx=e.x;d.fy=e.y;})
       .on('end',  (e,d)=>{if(!e.active)G.sim.alphaTarget(0);d.fx=null;d.fy=null;})
     )
-    .on('click',      (e,d)=>{e.stopPropagation();G.lastAct=Date.now();gOnNodeClick(d,simLinks,simNodes);})
-    .on('mouseenter', gOnHover)
-    .on('mouseleave', ()=>document.getElementById('tip')?.classList.remove('show'));
+    .on('click',      (e,d)=>{e.stopPropagation();G.lastAct=Date.now();hideEdgeTip();gOnNodeClick(d,simLinks,simNodes);})
+    .on('mouseenter', (e,d)=>gOnHover(e,d))
+    .on('mouseleave', ()=>gOnHoverEnd());
 
   // Pulse ring
   nodeGs.filter(d=>d.owned||d.type==='dc')
@@ -3249,36 +3248,176 @@ function drawGraph(nodes, links, container) {
   G.linkHit    = linkHit;
   G.linkLabels = linkLabels;
   G.nodeGs     = nodeGs;
-  applyGraphSearch();
-
-  // Highlight owned attack paths immediately
-  setTimeout(() => {
-    const { pathKeys, pairKeys, exactPairs } = buildAttackPathLinks();
-    if (pathKeys.size) {
-      linkPaths.attr('stroke-opacity', l => (pathKeys.has(l._key)||(!exactPairs.has(l._pairKey)&&pairKeys.has(l._pairKey))) ? .85 : .4)
-               .attr('stroke-width',   l => (pathKeys.has(l._key)||(!exactPairs.has(l._pairKey)&&pairKeys.has(l._pairKey)))?2.4:1.4);
-    }
-  }, 1800);
+  G.hoverFocusNode = null;
+  gPruneVisualFocusToVisible();
+  if ((S.objectSearch || '').trim()) applyGraphSearch();
+  else {
+    gApplyVisualFocus(G.simLinks || []);
+    const selected = G.simNodes?.find(n => n.id === G.selNode) || G.allNById?.[G.selNode];
+    if (selected) showGInfo(selected, G.simLinks || []);
+  }
 }
 
 // ── Graph interaction ─────────────────────────────────────────────────────
-function gOnNodeClick(d, simLinks, simNodes) {
-  if (G.selNode===d.id) { gClearSel(); return; }
-  G.selNode = d.id;
+function gLinkTouches(l, id) {
+  const s = l.source?.id || l.source;
+  const t = l.target?.id || l.target;
+  return s === id || t === id;
+}
 
-  const conn = new Set([d.id]);
-  simLinks.forEach(l=>{
-    if(l.source.id===d.id||l.target.id===d.id){conn.add(l.source.id);conn.add(l.target.id);}
+function gVisualFocusSet() {
+  if (!(G.visualFocusNodes instanceof Set)) G.visualFocusNodes = new Set();
+  return G.visualFocusNodes;
+}
+
+function gLinkTouchesActive(l) {
+  const focus = gVisualFocusSet();
+  for (const id of focus) {
+    if (gLinkTouches(l, id)) return true;
+  }
+  if (G.searchFocusNode && gLinkTouches(l, G.searchFocusNode)) return true;
+  if (G.hoverFocusNode && gLinkTouches(l, G.hoverFocusNode)) return true;
+  return false;
+}
+
+function gPaintPassiveGraph() {
+  if (G.root) {
+    G.root.selectAll('.g-mc').attr('opacity', 1);
+    G.root.selectAll('.g-nl').attr('opacity', 1);
+    G.root.selectAll('.g-ring').attr('opacity', .3);
+  }
+  if (G.linkPaths) G.linkPaths.attr('stroke-opacity', .05).attr('stroke-width', 1.2);
+  if (G.linkLabels) G.linkLabels.attr('opacity', .04);
+}
+
+function gSetPassiveEdges() {
+  G.visualFocusNodes = new Set();
+  G.visualFocusNode = null;
+  G.searchFocusNode = null;
+  G.hoverFocusNode = null;
+  gPaintPassiveGraph();
+}
+
+function gApplyVisualFocus(simLinks) {
+  if (!G.root) return;
+  const focus = gVisualFocusSet();
+  const activeIds = new Set(focus);
+  if (G.searchFocusNode) activeIds.add(G.searchFocusNode);
+  if (G.hoverFocusNode) activeIds.add(G.hoverFocusNode);
+  if (!activeIds.size) {
+    gPaintPassiveGraph();
+    return;
+  }
+
+  const conn = new Set(activeIds);
+  simLinks.forEach(l => {
+    const s = l.source?.id || l.source;
+    const t = l.target?.id || l.target;
+    if (activeIds.has(s) || activeIds.has(t)) {
+      conn.add(s);
+      conn.add(t);
+    }
   });
 
   G.root.selectAll('.g-mc').attr('opacity', function(){ return conn.has(this.dataset.id)?1:.1; });
   G.root.selectAll('.g-nl').attr('opacity', function(){ return conn.has(this.dataset.id)?1:.06; });
   G.root.selectAll('.g-ring').attr('opacity', .3);
-  G.linkPaths
-    .attr('stroke-opacity', l=>(l.source.id===d.id||l.target.id===d.id)?.93:.05)
-    .attr('stroke-width',   l=>(l.source.id===d.id||l.target.id===d.id)?2.6:1.2);
-  G.linkLabels
-    .attr('opacity', l=>(l.source.id===d.id||l.target.id===d.id)?.9:.04);
+  if (G.linkPaths) {
+    G.linkPaths
+      .attr('stroke-opacity', l=>gLinkTouchesActive(l) ? .93 : .05)
+      .attr('stroke-width',   l=>gLinkTouchesActive(l) ? 2.6 : 1.2);
+  }
+  if (G.linkLabels) {
+    G.linkLabels.attr('opacity', l=>gLinkTouchesActive(l) ? .9 : .04);
+  }
+}
+
+function gAddVisualFocus(id, simLinks) {
+  gVisualFocusSet().add(id);
+  G.visualFocusNode = id;
+  gApplyVisualFocus(simLinks);
+}
+
+function gRemoveVisualFocus(id, simLinks) {
+  gVisualFocusSet().delete(id);
+  G.visualFocusNode = gVisualFocusSet().size ? [...gVisualFocusSet()][gVisualFocusSet().size - 1] : null;
+  gApplyVisualFocus(simLinks);
+}
+
+function gSetSearchPreviewFocus(id, simLinks) {
+  G.searchFocusNode = id || null;
+  gApplyVisualFocus(simLinks);
+}
+
+function gSetHoverPreviewFocus(id, simLinks) {
+  G.hoverFocusNode = id || null;
+  gApplyVisualFocus(simLinks);
+}
+
+function gResetGraphVisualState() {
+  hideEdgeTip();
+  clearGraphContextFocus();
+  clearGraphSearchFocus();
+  G.selNode = null;
+  gSetPassiveEdges();
+  document.getElementById('gInfo')?.classList.add('hidden');
+  const pathBar = document.getElementById('gPathBar');
+  if (pathBar) pathBar.style.display = 'none';
+}
+
+function gPruneVisualFocusToVisible() {
+  const visibleIds = new Set((G.simNodes || []).map(n => n.id));
+  const focus = gVisualFocusSet();
+  for (const id of [...focus]) {
+    if (!visibleIds.has(id)) focus.delete(id);
+  }
+  if (G.searchFocusNode && !visibleIds.has(G.searchFocusNode)) G.searchFocusNode = null;
+  if (G.hoverFocusNode && !visibleIds.has(G.hoverFocusNode)) G.hoverFocusNode = null;
+  if (G.selNode && !visibleIds.has(G.selNode) && !G.allNById?.[G.selNode]) G.selNode = null;
+}
+
+function visibleContextForHiddenNode(id) {
+  const visibleIds = new Set((G.simNodes || []).map(n => n.id));
+  const parent = (G.allLinks || []).find(l => l.right === 'Contains' && l.target === id)?.source;
+  if (parent && visibleIds.has(parent)) return parent;
+  const bucket = G.bucketByItem?.[id];
+  if (bucket && visibleIds.has(bucket)) return bucket;
+  return null;
+}
+
+function clearGraphContextFocus() {
+  if (G.nodeGs) G.nodeGs.selectAll('.g-context-ring').remove();
+}
+
+function markGraphContextFocus(id) {
+  if (!G.nodeGs) return;
+  clearGraphContextFocus();
+  const target = G.nodeGs.filter(d => d.id === id);
+  target.append('circle')
+    .attr('class','g-context-ring')
+    .attr('r', d => (G_NODE_RADIUS[d.type] || 14) + 13)
+    .attr('fill','none')
+    .attr('stroke','#7dd3fc')
+    .attr('stroke-width',2.4)
+    .attr('stroke-dasharray','6 3')
+    .attr('pointer-events','none');
+}
+
+function gOnNodeClick(d, simLinks, simNodes) {
+  clearGraphContextFocus();
+  clearGraphSearchFocus();
+  G.searchFocusNode = null;
+  if (gVisualFocusSet().has(d.id)) {
+    gRemoveVisualFocus(d.id, simLinks);
+    if (G.selNode === d.id) {
+      G.selNode = null;
+      document.getElementById('gInfo').classList.add('hidden');
+      document.getElementById('gPathBar').style.display='none';
+    }
+    return;
+  }
+  G.selNode = d.id;
+  gAddVisualFocus(d.id, simLinks);
 
   showGInfo(d, simLinks);
 
@@ -3295,17 +3434,18 @@ function gFocusNode(id, event) {
   }
   const visible = G.simNodes?.find(n => n.id === id);
   if (visible) {
-    if (G.selNode === id) {
-      showGInfo(visible, G.simLinks || []);
-      return;
-    }
     gOnNodeClick(visible, G.simLinks || [], G.simNodes || []);
     return;
   }
   const full = G.allNById?.[id];
   if (full) {
     G.selNode = id;
-    if (G.root) {
+    const contextId = visibleContextForHiddenNode(id);
+    if (contextId) {
+      gAddVisualFocus(contextId, G.simLinks || []);
+      markGraphContextFocus(contextId);
+    } else if (G.root) {
+      clearGraphContextFocus();
       G.root.selectAll('.g-mc').attr('opacity', .12);
       G.root.selectAll('.g-nl').attr('opacity', .08);
       if (G.linkPaths) G.linkPaths.attr('stroke-opacity', .04).attr('stroke-width', 1.2);
@@ -3345,6 +3485,12 @@ function clearGraphSearchFocus() {
   if (G.nodeGs) G.nodeGs.selectAll('.g-search-ring').remove();
 }
 
+function clearGraphSearchPreview() {
+  clearGraphSearchFocus();
+  G.searchFocusNode = null;
+  gApplyVisualFocus(G.simLinks || []);
+}
+
 function showSearchOnlyInfo(item, reason) {
   const panel = document.getElementById('gInfo');
   if (!panel) return;
@@ -3361,8 +3507,12 @@ function showSearchOnlyInfo(item, reason) {
 function applyGraphSearch() {
   if (S.currentTab !== 'graph' || !G.root) return;
   clearGraphSearchFocus();
+  G.searchFocusNode = null;
   const q = (S.objectSearch || '').trim();
-  if (!q) return;
+  if (!q) {
+    gApplyVisualFocus(G.simLinks || []);
+    return;
+  }
   const statusMap = overviewGraphStatusMap();
   const matches = objectSearchMatches(statusMap);
   if (!matches.length) {
@@ -3372,7 +3522,9 @@ function applyGraphSearch() {
   const item = matches[0];
   const visible = G.simNodes?.find(n => n.id === item.key);
   if (visible) {
-    gFocusNode(item.key);
+    G.selNode = item.key;
+    gSetSearchPreviewFocus(item.key, G.simLinks || []);
+    showGInfo(visible, G.simLinks || []);
     markGraphSearchFocus(item.key);
     return;
   }
@@ -3387,6 +3539,7 @@ function applyGraphSearch() {
   const bucketId = G.bucketByItem?.[item.key];
   const bucket = bucketId ? G.simNodes?.find(n => n.id === bucketId) : null;
   if (bucket) {
+    gSetSearchPreviewFocus(bucketId, G.simLinks || []);
     markGraphSearchFocus(bucketId);
     showGInfo(graphSearchNodeFromItem(item), G.simLinks || []);
     return;
@@ -3405,6 +3558,7 @@ function gToggleInfoSection(key, event) {
 }
 
 function gOnHover(e,d) {
+  gSetHoverPreviewFocus(d.id, G.simLinks || []);
   const t = document.getElementById('tip');
   if (!t) return;
   t.textContent = `${d.label} — ${d.type}${d.owned?' [OWNED]':''}`;
@@ -3412,14 +3566,21 @@ function gOnHover(e,d) {
   t.classList.add('show');
 }
 
+function gOnHoverEnd() {
+  G.hoverFocusNode = null;
+  gApplyVisualFocus(G.simLinks || []);
+  document.getElementById('tip')?.classList.remove('show');
+}
+
 function gClearSel() {
   G.selNode = null;
   if (!G.root) return;
+  hideEdgeTip();
+  clearGraphContextFocus();
   G.root.selectAll('.g-mc').attr('opacity',1);
   G.root.selectAll('.g-nl').attr('opacity',1);
   G.root.selectAll('.g-ring').attr('opacity',.3);
-  if (G.linkPaths)  G.linkPaths.attr('stroke-opacity', l => l.structural ? .38 : .65).attr('stroke-width',1.6);
-  if (G.linkLabels) G.linkLabels.attr('opacity',.65);
+  gSetPassiveEdges();
   document.getElementById('gInfo').classList.add('hidden');
   document.getElementById('gPathBar').style.display='none';
 }
@@ -3548,6 +3709,7 @@ function showGPathBar(path) {
 
 function gSetMode(mode) {
   G.mode = mode;
+  gResetGraphVisualState();
   // Don't reset G.initialized — keep the SVG/zoom/intervals alive, just redraw nodes
   gSyncToolbarState();
   if (!G.svg) {
@@ -3561,6 +3723,7 @@ function gSetMode(mode) {
 
 function gSetEdgeLayer(layer) {
   G.edgeLayer = layer;
+  gResetGraphVisualState();
   gSyncToolbarState();
   if (!G.svg) {
     renderGraphTab();
@@ -3585,8 +3748,16 @@ let edgeTipVisible = false;
 let edgeTipTimer   = null;
 let edgeTipPinned  = false; // true when mouse is over the tooltip itself
 
+function restorePinnedEdgeVisual() {
+  if (!G.edgeTipKey || !G.linkPaths) return;
+  G.linkPaths.filter(l => l._key === G.edgeTipKey)
+    .attr('stroke-width', l => gLinkTouchesActive(l) ? 2.6 : 1.2)
+    .attr('stroke-opacity', l => gLinkTouchesActive(l) ? .93 : .05);
+}
+
 function showEdgeTip(e, link) {
   if (edgeTipTimer) { clearTimeout(edgeTipTimer); edgeTipTimer = null; }
+  G.edgeTipKey = link._key;
 
   const right = link.right;
   const tip   = document.getElementById('edgeTip');
@@ -3625,9 +3796,12 @@ function scheduleHideEdgeTip() {
 }
 
 function hideEdgeTip() {
-  document.getElementById('edgeTip').classList.remove('show');
+  restorePinnedEdgeVisual();
+  const tip = document.getElementById('edgeTip');
+  if (tip) tip.classList.remove('show');
   edgeTipVisible = false;
   edgeTipPinned  = false;
+  G.edgeTipKey = null;
 }
 
 function formatEdgeTip(raw) {
@@ -3721,7 +3895,7 @@ function showLoading(msg) {
 if __name__ == '__main__':
     print("""
 +------------------------------------------------------+
-|  BOBER EDITION v1.4.0 -- Attack Path Analyzer  🦫     |
+|  BOBER EDITION v1.4.1 -- Attack Path Analyzer  🦫     |
 |  http://localhost:5000                               |
 |  Ctrl+C -> stop                                  |
 +------------------------------------------------------+
