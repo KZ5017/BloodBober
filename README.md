@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="bloodbober.png" alt="BloodBober" width="280">
+</p>
+
 # BloodBober - BloodHound Attack Path Analyzer
 
 `BloodBober` is a small local Flask web application for reviewing BloodHound ZIP exports, highlighting interesting ACLs, delegation findings, roasting opportunities, and attack paths.
