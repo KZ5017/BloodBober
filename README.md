@@ -1,6 +1,6 @@
-# Bober Edition - BloodHound Attack Path Analyzer
+# BloodBober - BloodHound Attack Path Analyzer
 
-`bh-analyzer-bober` is a small local Flask web application for reviewing BloodHound ZIP exports, highlighting interesting ACLs, delegation findings, roasting opportunities, and attack paths.
+`BloodBober` is a small local Flask web application for reviewing BloodHound ZIP exports, highlighting interesting ACLs, delegation findings, roasting opportunities, and attack paths.
 
 ## Credits
 
@@ -13,13 +13,13 @@ Special thanks for the Bober Edition version.
 Install the wheel with `pipx`:
 
 ```bash
-pipx install dist/bh_analyzer_bober-1.4.2-py3-none-any.whl
+pipx install dist/blood_bober-1.4.3-py3-none-any.whl
 ```
 
 For the optional production WSGI server dependency:
 
 ```bash
-pipx inject bh-analyzer-bober waitress
+pipx inject blood-bober waitress
 ```
 
 ## Usage
@@ -27,7 +27,7 @@ pipx inject bh-analyzer-bober waitress
 Start the app:
 
 ```bash
-bh-analyzer
+bloodbober
 ```
 
 By default it listens on `127.0.0.1:5000` and opens the browser automatically.
@@ -35,9 +35,9 @@ By default it listens on `127.0.0.1:5000` and opens the browser automatically.
 Useful options:
 
 ```bash
-bh-analyzer --host 127.0.0.1 --port 5000
-bh-analyzer --no-browser
-bh-analyzer --debug
+bloodbober --host 127.0.0.1 --port 5000
+bloodbober --no-browser
+bloodbober --debug
 ```
 
 Then load a BloodHound ZIP file in the web UI and mark owned principals in the sidebar.
