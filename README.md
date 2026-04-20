@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="bloodbober.png" alt="BloodBober" width="280">
+  <img src="bloodbober.jpg" alt="BloodBober" width="280">
 </p>
 
 # BloodBober - BloodHound Attack Path Analyzer
