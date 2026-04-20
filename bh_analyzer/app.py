@@ -805,6 +805,23 @@ def resolve_sid(sid, sid_cache):
 def base_name(name):
     return name.upper().split('@')[0]
 
+def sam_name(name, props=None):
+    props = props or {}
+    return str(props.get('samaccountname') or base_name(name)).upper()
+
+def is_machine_account(name, props=None, obj_type=None):
+    return obj_type == 'Computer' or sam_name(name, props).endswith('$')
+
+def is_gmsa_account(name, props=None, obj_type=None):
+    props = props or {}
+    dn = str(props.get('distinguishedname') or '').upper()
+    return obj_type == 'User' and sam_name(name, props).endswith('$') and 'MANAGED SERVICE ACCOUNTS' in dn
+
+def is_domain_controller(name, props=None, obj_type=None):
+    props = props or {}
+    dn = str(props.get('distinguishedname') or '').upper()
+    return obj_type == 'Computer' and ('DOMAIN CONTROLLERS' in dn or (bool(props.get('unconstraineddelegation')) and 'DC' in name.upper()))
+
 def is_noise(name):
     return base_name(name) in NOISE
 
@@ -839,14 +856,75 @@ def build_graph(data, sid_cache):
     forward = defaultdict(list)   # nameUpper -> [{target, right, inherited, sev}]
     member_of = defaultdict(set)  # nameUpper -> set of groupNameUpper
     raw_acls = []
+    structural_edges = []
     deleg = {'constrained': [], 'unconstrained': []}
     pre2k = []
+    object_index = {}
+    object_lists = defaultdict(list)
 
-    all_objects = (data['users'] + data['computers'] + data['groups'] +
-                   data['gpos'] + data['domains'] + data['ous'] + data['containers'])
+    typed_objects = (
+        [('User', obj) for obj in data['users']] +
+        [('Computer', obj) for obj in data['computers']] +
+        [('Group', obj) for obj in data['groups']] +
+        [('GPO', obj) for obj in data['gpos']] +
+        [('Domain', obj) for obj in data['domains']] +
+        [('OU', obj) for obj in data['ous']] +
+        [('Container', obj) for obj in data['containers']]
+    )
 
-    for obj in all_objects:
+    for obj_type, obj in typed_objects:
+        p = obj.get('Properties', {})
+        name = p.get('name', obj.get('ObjectIdentifier', '?'))
+        key = base_name(name)
+        object_index[key] = {
+            'name': name,
+            'key': key,
+            'type': obj_type,
+            'objectid': obj.get('ObjectIdentifier', ''),
+            'enabled': p.get('enabled', True),
+            'admincount': bool(p.get('admincount')),
+            'trustedtoauth': bool(p.get('trustedtoauth')),
+            'unconstrained': bool(p.get('unconstraineddelegation')),
+            'hasspn': bool(p.get('hasspn')),
+            'dontreqpreauth': bool(p.get('dontreqpreauth')),
+            'isMachine': is_machine_account(name, p, obj_type),
+            'isDC': is_domain_controller(name, p, obj_type),
+            'isGmsa': is_gmsa_account(name, p, obj_type),
+        }
+        object_lists[obj_type].append(object_index[key])
+
+    for obj_type, obj in typed_objects:
+        p = obj.get('Properties', {})
+        parent_name = p.get('name', obj.get('ObjectIdentifier', '?'))
+        for child in obj.get('ChildObjects', []) or []:
+            child_name = resolve_sid(child.get('ObjectIdentifier', ''), sid_cache)
+            if not child_name:
+                continue
+            structural_edges.append({
+                'source': parent_name,
+                'source_type': obj_type,
+                'target': child_name,
+                'target_type': child.get('ObjectType', object_index.get(base_name(child_name), {}).get('type', 'Unknown')),
+                'right': 'Contains',
+                'sev': SEVERITY.get('Contains', 90),
+            })
+        for link in obj.get('Links', []) or []:
+            gpo_name = resolve_sid(link.get('GUID', ''), sid_cache)
+            if not gpo_name:
+                continue
+            structural_edges.append({
+                'source': gpo_name,
+                'source_type': 'GPO',
+                'target': parent_name,
+                'target_type': obj_type,
+                'right': 'GpLink',
+                'sev': SEVERITY.get('GpLink', 90),
+                'enforced': bool(link.get('IsEnforced')),
+            })
+
+    for obj_type, obj in typed_objects:
         target = obj.get('Properties', {}).get('name', obj.get('ObjectIdentifier', '?'))
+        target_key = base_name(target)
         for ace in obj.get('Aces', []):
             right = RIGHT_ALIASES.get(ace.get('RightName', ''), ace.get('RightName', ''))
             if right not in CRITICAL_RIGHTS:
@@ -855,8 +933,10 @@ def build_graph(data, sid_cache):
             if is_noise(principal):
                 continue
             key = base_name(principal)
+            principal_type = ace.get('PrincipalType', object_index.get(key, {}).get('type', '?'))
             entry = {
                 'target': target,
+                'target_type': obj_type,
                 'right': right,
                 'inherited': ace.get('IsInherited', False),
                 'sev': SEVERITY.get(right, 99),
@@ -864,9 +944,10 @@ def build_graph(data, sid_cache):
             forward[key].append(entry)
             raw_acls.append({
                 'principal': principal,
-                'principal_type': ace.get('PrincipalType', '?'),
+                'principal_type': principal_type,
                 'right': right,
                 'target': target,
+                'target_type': object_index.get(target_key, {}).get('type', obj_type),
                 'inherited': ace.get('IsInherited', False),
                 'sev': SEVERITY.get(right, 99),
             })
@@ -896,6 +977,9 @@ def build_graph(data, sid_cache):
         'forward': dict(forward),
         'member_of': {k: list(v) for k, v in member_of.items()},
         'raw_acls': raw_acls,
+        'structural_edges': structural_edges,
+        'objects': object_index,
+        'object_lists': dict(object_lists),
         'deleg': deleg,
         'pre2k': list(set(pre2k)),
     }
@@ -910,6 +994,8 @@ def build_principals(data, sid_cache):
         p = item.get('Properties', {})
         name = p.get('name', item.get('ObjectIdentifier', '?'))
         key = base_name(name)
+        if is_noise(name):
+            return
         if key in seen:
             return
         seen.add(key)
@@ -923,9 +1009,9 @@ def build_principals(data, sid_cache):
             'unconstrained': bool(p.get('unconstraineddelegation')),
             'hasspn': bool(p.get('hasspn')),
             'dontreqpreauth': bool(p.get('dontreqpreauth')),
-            'isMachine': name.endswith('$'),
-            'isDC': (bool(p.get('unconstraineddelegation')) and 'DC' in name.upper()),
-            'isGmsa': '$' in name and ('gmsa' in name.lower() or name.lower().startswith('svc')),
+            'isMachine': is_machine_account(name, p, ptype),
+            'isDC': is_domain_controller(name, p, ptype),
+            'isGmsa': is_gmsa_account(name, p, ptype),
             'allowedtodelegate': p.get('allowedtodelegate', []),
         })
 
@@ -944,10 +1030,14 @@ def get_stats(data, principals, raw_acls, attack_paths_count=0):
         'computers': len([p for p in principals if p['type'] == 'Computer']),
         'groups': len(data['groups']),
         'gpos': len(data['gpos']),
+        'ous': len(data['ous']),
+        'containers': len(data['containers']),
+        'gmsa': len([p for p in principals if p['isGmsa']]),
         'acls': len(raw_acls),
         'kerberoastable': sum(1 for u in non_machine if u['hasspn'] and u['enabled']),
         'asrep': sum(1 for u in non_machine if u['dontreqpreauth']),
-        'dcs': len([p for p in principals if p['unconstrained']]),
+        'dcs': len([p for p in principals if p['isDC']]),
+        'unconstrained': len([p for p in principals if p['unconstrained']]),
         'paths': attack_paths_count,
     }
 
@@ -1115,6 +1205,10 @@ aside{border-right:1px solid var(--border);background:var(--panel);display:flex;
 .dz-text b{color:var(--cyan);display:block}
 .sb-search{width:100%;background:var(--panel2);border:1px solid var(--border2);color:var(--white);padding:5px 10px;border-radius:4px;font-family:'Share Tech Mono',monospace;font-size:.81em;outline:none;margin-top:8px}
 .sb-search:focus{border-color:var(--cyan)}
+.sb-help{color:var(--dim);font-size:.72em;line-height:1.55;letter-spacing:.5px;margin:8px 0 8px}
+.sb-filters{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.sb-filter{background:transparent;border:1px solid var(--border2);color:var(--dim2);padding:2px 7px;border-radius:3px;font-family:'Share Tech Mono',monospace;font-size:.70em;cursor:pointer;letter-spacing:.7px;text-transform:uppercase;transition:all .15s}
+.sb-filter:hover,.sb-filter.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.06)}
 .node-list{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
 .ni{display:flex;align-items:center;gap:7px;padding:6px 14px;cursor:pointer;transition:all .15s;border-left:2px solid transparent;font-size:.81em}
 .ni:hover{background:rgba(0,212,255,.04)}
@@ -1138,6 +1232,13 @@ main{display:flex;flex-direction:column;overflow:hidden}
 .tab{padding:7px 14px;font-family:'Share Tech Mono',monospace;font-size:0.80em;letter-spacing:2px;text-transform:uppercase;color:var(--dim2);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;background:none;border-top:none;border-left:none;border-right:none}
 .tab:hover{color:var(--cyan)}
 .tab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+.tab-spacer{flex:1}
+.object-search{display:flex;align-items:center;gap:6px;margin-left:auto;padding-bottom:6px}
+.object-search.hidden{display:none}
+.object-search input{width:240px;background:var(--panel2);border:1px solid var(--border2);color:var(--white);padding:5px 10px;border-radius:4px;font-family:'Share Tech Mono',monospace;font-size:.78em;outline:none}
+.object-search input:focus{border-color:var(--cyan)}
+.object-search button{background:transparent;border:1px solid var(--border2);color:var(--dim2);padding:4px 8px;border-radius:3px;font-family:'Share Tech Mono',monospace;font-size:.74em;cursor:pointer}
+.object-search button:hover{border-color:var(--cyan);color:var(--cyan)}
 .content{flex:1;overflow-y:auto;padding:18px 20px;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
 .welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;min-height:300px;gap:14px;text-align:center}
 .w-icon{font-size:2.8em;opacity:.35}
@@ -1145,9 +1246,24 @@ main{display:flex;flex-direction:column;overflow:hidden}
 .w-sub{font-size:0.80em;color:var(--dim);letter-spacing:1px;line-height:2}
 .stat-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:9px;margin-bottom:18px}
 .sc{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:11px 8px;text-align:center}
+.sc.clickable{cursor:pointer;transition:border-color .15s,background .15s,transform .15s}
+.sc.clickable:hover,.sc.active{border-color:var(--cyan);background:rgba(0,212,255,.06)}
+.sc.clickable:hover{transform:translateY(-1px)}
 .sc-n{font-family:'Orbitron',monospace;font-size:1.5em;font-weight:900;color:var(--cyan);display:block}
 .sc-n.warn{color:var(--red)} .sc-n.ok{color:var(--green)} .sc-n.paths{color:var(--orange)}
 .sc-l{font-size:0.80em;color:var(--dim2);letter-spacing:1px;text-transform:uppercase;margin-top:3px}
+.ov-empty{color:var(--dim2);text-align:center;padding:18px;border:1px dashed var(--border);border-radius:5px;font-size:.82em}
+.ov-name{color:var(--cyan);font-family:'Share Tech Mono',monospace}
+.ov-tags{display:flex;gap:4px;flex-wrap:wrap}
+.ov-graph{display:flex;gap:4px;flex-wrap:wrap}
+.ov-g{font-size:.76em;padding:1px 5px;border-radius:2px;border:1px solid var(--border2);color:var(--dim2);white-space:nowrap}
+.ov-g.vis{color:var(--green);border-color:rgba(0,255,136,.35);background:rgba(0,255,136,.07)}
+.ov-g.bucket{color:var(--yellow);border-color:rgba(255,215,0,.35);background:rgba(255,215,0,.07)}
+.ov-g.disc{color:var(--dim);border-color:var(--border);background:rgba(255,255,255,.02)}
+.ov-g.acl{color:var(--red);border-color:rgba(255,34,68,.35);background:rgba(255,34,68,.06)}
+.ov-g.struct{color:var(--cyan);border-color:rgba(0,212,255,.35);background:rgba(0,212,255,.06)}
+.ov-g.member{color:var(--purple);border-color:rgba(187,134,252,.35);background:rgba(187,134,252,.06)}
+.ov-g.path{color:var(--orange);border-color:rgba(255,107,43,.35);background:rgba(255,107,43,.06)}
 .sec{margin-bottom:22px}
 .sec-title{font-family:'Orbitron',monospace;font-size:0.80em;letter-spacing:3px;color:var(--dim2);text-transform:uppercase;padding-bottom:7px;margin-bottom:11px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
 .sec-title .cnt{background:rgba(0,212,255,.1);color:var(--cyan);border:1px solid rgba(0,212,255,.3);padding:1px 8px;border-radius:3px;font-size:.9em}
@@ -1299,7 +1415,16 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-info-row { display:flex; justify-content:space-between; font-size:0.80em; }
 .g-info-edges { padding:0 13px 10px; display:flex; flex-direction:column; gap:3px; }
 .g-edge-row { display:flex; align-items:center; gap:5px; font-size:.87em; padding:2px 5px; border-radius:3px; border:1px solid var(--border); }
+.g-edge-row.clickable { cursor:pointer; transition:border-color .15s, background .15s; }
+.g-edge-row.clickable:hover { border-color:var(--cyan); background:rgba(0,212,255,.06); }
 .g-badge { padding:1px 5px; border-radius:2px; font-weight:bold; font-size:.85em; white-space:nowrap; }
+.g-edge-section { margin-top:5px; display:flex; flex-direction:column; gap:3px; }
+.g-edge-title { font-family:'Orbitron',monospace; color:var(--dim2); font-size:.70em; letter-spacing:2px; padding:4px 1px 1px; text-transform:uppercase; }
+.g-edge-empty { color:var(--dim); font-size:.78em; padding:4px 6px; border:1px dashed var(--border); border-radius:3px; }
+.g-edge-name { color:var(--dim2); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.g-edge-meta { color:var(--dim); font-size:.80em; white-space:nowrap; }
+.g-edge-more { align-self:flex-end; background:transparent; border:0; color:var(--cyan); cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:.72em; padding:2px 3px; }
+.g-edge-more:hover { text-decoration:underline; }
 
 /* graph path bar */
 .g-pathbar {
@@ -1369,7 +1494,16 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-info-row { display:flex; justify-content:space-between; font-size:0.80em; }
 .g-info-edges { padding:0 13px 10px; display:flex; flex-direction:column; gap:3px; }
 .g-edge-row { display:flex; align-items:center; gap:5px; font-size:.87em; padding:2px 5px; border-radius:3px; border:1px solid var(--border); }
+.g-edge-row.clickable { cursor:pointer; transition:border-color .15s, background .15s; }
+.g-edge-row.clickable:hover { border-color:var(--cyan); background:rgba(0,212,255,.06); }
 .g-badge { padding:1px 5px; border-radius:2px; font-weight:bold; font-size:.85em; white-space:nowrap; }
+.g-edge-section { margin-top:5px; display:flex; flex-direction:column; gap:3px; }
+.g-edge-title { font-family:'Orbitron',monospace; color:var(--dim2); font-size:.70em; letter-spacing:2px; padding:4px 1px 1px; text-transform:uppercase; }
+.g-edge-empty { color:var(--dim); font-size:.78em; padding:4px 6px; border:1px dashed var(--border); border-radius:3px; }
+.g-edge-name { color:var(--dim2); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.g-edge-meta { color:var(--dim); font-size:.80em; white-space:nowrap; }
+.g-edge-more { align-self:flex-end; background:transparent; border:0; color:var(--cyan); cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:.72em; padding:2px 3px; }
+.g-edge-more:hover { text-decoration:underline; }
 
 /* graph path bar */
 .g-pathbar {
@@ -1518,13 +1652,22 @@ tr:hover td{background:rgba(0,212,255,.02)}
 <div class="app">
   <aside>
     <div class="sb-top">
-      <div class="sb-title">Principals <span class="badge" id="ownedBadge">0 owned</span></div>
+      <div class="sb-title">Starting Points <span class="badge" id="ownedBadge">0 owned</span></div>
       <div id="dropzone" class="dropzone" onclick="document.getElementById('fi').click()">
         <div class="dz-icon">📦</div>
         <div class="dz-text"><b>🦫 DROP BLOODHOUND ZIP</b>or click</div>
       </div>
       <input type="file" id="fi" accept=".zip" style="display:none" onchange="loadZip(this.files[0])">
+      <div class="sb-help">Mark controlled accounts or hosts to calculate attack paths.</div>
       <input class="sb-search" id="sbSearch" placeholder="// filter..." oninput="renderSidebar()">
+      <div class="sb-filters" id="sbFilters">
+        <button class="sb-filter active" onclick="setSidebarFilter('all')">All</button>
+        <button class="sb-filter" onclick="setSidebarFilter('users')">Users</button>
+        <button class="sb-filter" onclick="setSidebarFilter('computers')">Computers</button>
+        <button class="sb-filter" onclick="setSidebarFilter('gmsa')">gMSA</button>
+        <button class="sb-filter" onclick="setSidebarFilter('interesting')">Interesting</button>
+        <button class="sb-filter" onclick="setSidebarFilter('owned')">Owned</button>
+      </div>
     </div>
     <div class="node-list" id="nodeList">
       <div style="padding:16px;text-align:center;color:var(--dim);font-size:.62em;letter-spacing:1px;">Load a ZIP file</div>
@@ -1537,6 +1680,11 @@ tr:hover td{background:rgba(0,212,255,.02)}
       <button class="tab" onclick="switchTab('deleg')">🎫 Insights</button>
       <button class="tab" onclick="switchTab('overview')">🗺 Overview</button>
       <button class="tab" onclick="switchTab('graph')">🕸 Graph</button>
+      <div class="tab-spacer"></div>
+      <div class="object-search hidden" id="objectSearchWrap">
+        <input id="objectSearch" placeholder="// search AD objects..." oninput="setObjectSearch(this.value)">
+        <button onclick="clearObjectSearch()">CLEAR</button>
+      </div>
     </div>
     <div class="content" id="content">
       <div class="welcome">
@@ -1566,14 +1714,16 @@ tr:hover td{background:rgba(0,212,255,.02)}
 const G = {
   svg: null, root: null, zoom: null, sim: null,
   initialized: false, selNode: null,
+  mode: 'all', edgeLayer: 'all',
+  infoExpanded: {},
   cycleIdx: -1, cycleTimer: null, lastAct: Date.now(),
 };
 
 
-const G_NODE_COLOR  = {User:'#00d4ff',Computer:'#ff7b2b',Group:'#c084fc',Domain:'#1a5a3a',dc:'#ff2244',gmsa:'#ffd700'};
-const G_NODE_STROKE = {User:'#007799',Computer:'#aa4400',Group:'#7744aa',Domain:'#2a7050',dc:'#990011',gmsa:'#aa7700'};
-const G_NODE_RADIUS = {User:13,Computer:15,Group:17,Domain:19,dc:21,gmsa:12};
-const G_NODE_ICON   = {User:'👤',Computer:'🖥',Group:'👥',Domain:'🌐',dc:'🏴‍☠️',gmsa:'🔑'};
+const G_NODE_COLOR  = {User:'#00d4ff',Computer:'#ff7b2b',Group:'#c084fc',GPO:'#ff4fa3',Domain:'#1a5a3a',OU:'#42d392',Container:'#8aa4b8',Bucket:'#53606a',dc:'#ff2244',gmsa:'#ffd700'};
+const G_NODE_STROKE = {User:'#007799',Computer:'#aa4400',Group:'#7744aa',GPO:'#aa2f6f',Domain:'#2a7050',OU:'#1f8f62',Container:'#526b7a',Bucket:'#7c8a95',dc:'#990011',gmsa:'#aa7700'};
+const G_NODE_RADIUS = {User:13,Computer:15,Group:17,GPO:16,Domain:19,OU:16,Container:15,Bucket:16,dc:21,gmsa:12};
+const G_NODE_ICON   = {User:'👤',Computer:'🖥',Group:'👥',GPO:'📜',Domain:'🌐',OU:'▣',Container:'⬚',Bucket:'⋯',dc:'🏴‍☠️',gmsa:'🔑'};
 const G_SEV_COLOR   = {1:'#ff2244',2:'#ff7b2b',3:'#ffd700',4:'#00ff88'};
 const G_SEV_MAP     = {GenericAll:1,DCSync:1,GetChangesAll:1,GetChanges:1,GetChangesInFilteredSet:2,WriteDacl:2,WriteOwner:2,Owns:2,AllExtendedRights:2,ForceChangePassword:3,GenericWrite:3,WriteSPN:3,WriteGPLink:3,ReadGMSAPassword:4,SyncLAPSPassword:4,AddKeyCredentialLink:3,WriteAccountRestrictions:3,AddAllowedToAct:3,AllowedToAct:3,AddMember:4,AddSelf:4,MemberOf:4,Contains:4,ReadLAPSPassword:4};
 const G_SKIP_LABEL  = new Set(['MemberOf','Contains']);
@@ -1583,6 +1733,9 @@ let S = {
   domain: '', principals: [], graph: {}, stats: {},
   owned: new Set(), paths: [], currentTab: 'paths',
   pathFilter: 'all', pathSearch: '',
+  overviewFocus: 'users',
+  sidebarFilter: 'all',
+  objectSearch: '',
 };
 
 // ── CONFIG STATE ──
@@ -1788,7 +1941,16 @@ async function recomputePaths() {
 // ── UI ──
 function updateHeader() {
   document.getElementById('hstats').innerHTML =
-    `Domain: <b>${S.domain}</b> &nbsp;|&nbsp; Users: <b>${S.stats.users}</b> &nbsp;|&nbsp; Computers: <b>${S.stats.computers}</b> &nbsp;|&nbsp; ACEs: <b>${S.stats.acls}</b>`;
+    `Domain: <b>${S.domain}</b> &nbsp;|&nbsp; Users: <b>${S.stats.users}</b> &nbsp;|&nbsp; Computers: <b>${S.stats.computers}</b> &nbsp;|&nbsp; Crit ACEs: <b>${S.stats.acls}</b>`;
+}
+
+function isSidebarInteresting(p) {
+  return p.isDC || p.isGmsa || p.unconstrained || p.admincount || p.hasspn || p.dontreqpreauth || p.trustedtoauth;
+}
+
+function setSidebarFilter(filter) {
+  S.sidebarFilter = filter;
+  renderSidebar();
 }
 
 function renderSidebar() {
@@ -1796,9 +1958,24 @@ function renderSidebar() {
   const cnt = S.owned.size;
   document.getElementById('ownedBadge').textContent = cnt ? `${cnt} owned` : '0 owned';
   document.getElementById('ownedBadge').className = 'badge' + (cnt ? ' warn' : '');
+  document.querySelectorAll('.sb-filter').forEach(btn => {
+    const txt = btn.textContent.trim().toLowerCase();
+    const map = {all:'all', users:'users', computers:'computers', gmsa:'gmsa', interesting:'interesting', owned:'owned'};
+    btn.classList.toggle('active', map[txt] === S.sidebarFilter);
+  });
+
+  const matchesFilter = p => {
+    if (S.sidebarFilter === 'users') return p.type === 'User' && !p.isMachine;
+    if (S.sidebarFilter === 'computers') return p.type === 'Computer';
+    if (S.sidebarFilter === 'gmsa') return p.isGmsa;
+    if (S.sidebarFilter === 'interesting') return isSidebarInteresting(p);
+    if (S.sidebarFilter === 'owned') return S.owned.has(p.key);
+    return true;
+  };
 
   const sorted = [...S.principals]
     .filter(p => !q || p.name.toLowerCase().includes(q))
+    .filter(matchesFilter)
     .sort((a,b) => {
       const ao = S.owned.has(a.key) ? 0 : 1;
       const bo = S.owned.has(b.key) ? 0 : 1;
@@ -1811,6 +1988,8 @@ function renderSidebar() {
     const tags = [
       p.isDC ? '<span class="tag-sm t-dc">DC</span>' : '',
       p.isGmsa ? '<span class="tag-sm t-gmsa">gMSA</span>' : '',
+      p.unconstrained ? '<span class="tag-sm t-dc">UNCON</span>' : '',
+      p.admincount ? '<span class="tag-sm t-dc">Admin</span>' : '',
       (p.hasspn && !p.isMachine) ? '<span class="tag-sm t-spn">SPN</span>' : '',
       p.trustedtoauth ? '<span class="tag-sm t-t2a4d">T2A4D</span>' : '',
       p.dontreqpreauth ? '<span class="tag-sm t-asrep">ASREP</span>' : '',
@@ -1824,7 +2003,8 @@ function renderSidebar() {
     </div>`;
   }).join('');
 
-  document.getElementById('nodeList').innerHTML = items || '<div style="padding:16px;text-align:center;color:var(--dim);font-size:.62em">No results</div>';
+  const label = S.sidebarFilter === 'all' ? 'starting points' : S.sidebarFilter;
+  document.getElementById('nodeList').innerHTML = items || `<div style="padding:16px;text-align:center;color:var(--dim);font-size:.62em">No ${label} match</div>`;
 }
 
 async function toggleOwned(key) {
@@ -1846,7 +2026,31 @@ function switchTab(tab) {
   const isGraph = tab === 'graph';
   document.getElementById('content').style.display   = isGraph ? 'none' : '';
   document.getElementById('graphView').style.display = isGraph ? 'flex' : 'none';
+  updateObjectSearchVisibility();
   renderCurrentTab();
+}
+
+function updateObjectSearchVisibility() {
+  const wrap = document.getElementById('objectSearchWrap');
+  const input = document.getElementById('objectSearch');
+  if (!wrap || !input) return;
+  const visible = ['overview','graph'].includes(S.currentTab);
+  wrap.classList.toggle('hidden', !visible);
+  input.value = S.objectSearch || '';
+}
+
+function setObjectSearch(value) {
+  S.objectSearch = value || '';
+  if (S.currentTab === 'overview') renderOverviewDetail();
+  else if (S.currentTab === 'graph') applyGraphSearch();
+}
+
+function clearObjectSearch() {
+  S.objectSearch = '';
+  const input = document.getElementById('objectSearch');
+  if (input) input.value = '';
+  if (S.currentTab === 'overview') renderOverviewDetail();
+  else if (S.currentTab === 'graph') applyGraphSearch();
 }
 
 function renderCurrentTab() {
@@ -1955,7 +2159,12 @@ function formatTip(right, raw) {
 }
 
 function escHtml(s) {
+  s = String(s ?? '');
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(s) {
+  return escHtml(s).replace(/'/g,'&#39;');
 }
 
 // Copy plain text from a <pre> block (strips HTML tags / spans)
@@ -2192,12 +2401,18 @@ function renderDelegExtra() {
 
 function renderOverviewTab() {
   const s = S.stats;
-  const cards = [
-    {n:s.users,l:'Users',c:''},{n:s.computers,l:'Computers',c:''},{n:s.groups,l:'Groups',c:''},
-    {n:s.gpos,l:'GPOs',c:''},{n:s.dcs,l:'DC/Uncon',c:s.dcs?'warn':''},{n:s.acls,l:'Crit ACEs',c:s.acls?'warn':''},
-    {n:s.kerberoastable,l:'Kerberoast',c:s.kerberoastable?'warn':''},{n:s.asrep,l:'AS-REP',c:s.asrep?'warn':''},
-    {n:s.paths,l:'Paths',c:s.paths?'paths':''},
-  ].map(s=>`<div class="sc"><span class="sc-n ${s.c}">${s.n}</span><div class="sc-l">${s.l}</div></div>`).join('');
+  const cardDefs = [
+    {k:'users',n:s.users,l:'Users',c:''},{k:'computers',n:s.computers,l:'Computers',c:''},{k:'groups',n:s.groups,l:'Groups',c:''},
+    {k:'gpos',n:s.gpos,l:'GPOs',c:''},{k:'ous',n:s.ous||0,l:'OUs',c:''},{k:'containers',n:s.containers||0,l:'Containers',c:''},
+    {k:'dcs',n:s.dcs||0,l:'DCs',c:s.dcs?'warn':''},{k:'unconstrained',n:s.unconstrained||0,l:'Unconstrained',c:s.unconstrained?'warn':''},
+    {k:'gmsa',n:s.gmsa||0,l:'gMSA',c:s.gmsa?'warn':''},{k:'acls',n:s.acls,l:'Crit ACEs',c:s.acls?'warn':''},
+    {k:'kerberoastable',n:s.kerberoastable,l:'Kerberoast',c:s.kerberoastable?'warn':''},{k:'asrep',n:s.asrep,l:'AS-REP',c:s.asrep?'warn':''},
+    {k:'paths',n:s.paths,l:'Paths',c:s.paths?'paths':''},
+  ];
+  if (!cardDefs.some(c => c.k === S.overviewFocus)) S.overviewFocus = 'users';
+  const cards = cardDefs.map(card=>`<div class="sc clickable ${S.overviewFocus===card.k?'active':''}" onclick="setOverviewFocus('${card.k}')">
+    <span class="sc-n ${card.c}">${card.n}</span><div class="sc-l">${card.l}</div>
+  </div>`).join('');
 
   const interesting = S.principals.filter(p => !p.isMachine && (p.hasspn||p.dontreqpreauth||p.trustedtoauth||p.admincount));
   const irows = interesting.map(u => {
@@ -2207,8 +2422,193 @@ function renderOverviewTab() {
 
   document.getElementById('content').innerHTML = `
     <div class="sec"><div class="sec-title">Overview — ${S.domain}</div><div class="stat-row">${cards}</div></div>
+    <div class="sec" id="overviewDetail"></div>
     <div class="sec"><div class="sec-title">Interesting Principals <span class="cnt">${interesting.length}</span></div>
     <div class="acl-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Enabled</th><th>Flags</th></tr></thead><tbody>${irows||'<tr><td colspan="4" style="color:var(--dim2);text-align:center;padding:16px">—</td></tr>'}</tbody></table></div></div>`;
+  renderOverviewDetail();
+}
+
+function setOverviewFocus(kind) {
+  S.overviewFocus = kind;
+  renderOverviewTab();
+}
+
+function overviewObjectList(type) {
+  return ((S.graph.object_lists || {})[type] || Object.values(S.graph.objects || {}).filter(o => o.type === type))
+    .sort((a,b) => a.name.localeCompare(b.name));
+}
+
+function overviewGraphStatusMap() {
+  const status = {};
+  const ensure = id => {
+    if (!status[id]) status[id] = {visible:false, bucketed:false, acl:false, structure:false, member:false, path:false};
+    return status[id];
+  };
+  const { nodes, links } = buildGraphData();
+  nodes.forEach(n => {
+    const s = ensure(n.id);
+    s.visible = true;
+    s.path = !!n.onPath;
+  });
+  links.forEach(l => {
+    const source = l.source?.id || l.source;
+    const target = l.target?.id || l.target;
+    [source, target].forEach(id => ensure(id).visible = true);
+    if (l.structural) {
+      ensure(source).structure = true;
+      ensure(target).structure = true;
+    } else if (l.right === 'MemberOf') {
+      ensure(source).member = true;
+      ensure(target).member = true;
+    } else {
+      ensure(source).acl = true;
+      ensure(target).acl = true;
+    }
+  });
+  const structuralLinks = links.filter(l => l.structural);
+  const compacted = compactStructureView(nodes, structuralLinks);
+  compacted.nodes.filter(n => n.bucket).forEach(bucket => {
+    (bucket.bucketItems || []).forEach(id => ensure(id).bucketed = true);
+  });
+  return status;
+}
+
+function graphStatusBadges(item, statusMap) {
+  const id = item.key || item.name?.toUpperCase().split('@')[0] || '';
+  const s = statusMap[id] || {};
+  const badges = [];
+  if (s.visible) badges.push('<span class="ov-g vis">Visible</span>');
+  else badges.push('<span class="ov-g disc">Disconnected</span>');
+  if (s.bucketed) badges.push('<span class="ov-g bucket">Bucketed</span>');
+  if (s.acl) badges.push('<span class="ov-g acl">ACL</span>');
+  if (s.structure) badges.push('<span class="ov-g struct">Structure</span>');
+  if (s.member) badges.push('<span class="ov-g member">MemberOf</span>');
+  if (s.path) badges.push('<span class="ov-g path">Path</span>');
+  return `<div class="ov-graph">${badges.join('')}</div>`;
+}
+
+function objectSearchIndex(statusMap) {
+  const byKey = new Map();
+  const add = (item, source) => {
+    if (!item?.name) return;
+    const key = item.key || item.name.toUpperCase().split('@')[0];
+    const id = `${key}|${item.type || 'Object'}`;
+    if (byKey.has(id)) return;
+    byKey.set(id, {
+      key,
+      name: item.name,
+      type: item.type || 'Object',
+      source,
+      enabled: item.enabled,
+      isMachine: !!item.isMachine,
+      isDC: !!item.isDC,
+      isGmsa: !!item.isGmsa,
+      status: statusMap[key] || {},
+    });
+  };
+  S.principals.forEach(p => add(p, 'Starting Point'));
+  Object.entries(S.graph.object_lists || {}).forEach(([type, items]) => {
+    (items || []).forEach(o => add(o, 'Inventory'));
+  });
+  return [...byKey.values()].sort((a,b) => a.name.localeCompare(b.name));
+}
+
+function objectSearchMatches(statusMap) {
+  const q = (S.objectSearch || '').trim().toLowerCase();
+  if (!q) return [];
+  return objectSearchIndex(statusMap).filter(item =>
+    item.name.toLowerCase().includes(q) ||
+    item.key.toLowerCase().includes(q) ||
+    item.type.toLowerCase().includes(q)
+  ).sort((a,b) => {
+    const ax = a.key.toLowerCase() === q || a.name.toLowerCase() === q ? 0 : a.key.toLowerCase().startsWith(q) ? 1 : 2;
+    const bx = b.key.toLowerCase() === q || b.name.toLowerCase() === q ? 0 : b.key.toLowerCase().startsWith(q) ? 1 : 2;
+    return ax !== bx ? ax - bx : a.name.localeCompare(b.name);
+  });
+}
+
+function objectSearchRows(items, statusMap) {
+  return items.map(item => `<tr>
+    <td class="ov-name">${escHtml(item.name.split('@')[0])}</td>
+    <td class="tc-dim">${escHtml(item.type)}</td>
+    <td class="tc-dim">${escHtml(item.source)}</td>
+    <td>${graphStatusBadges(item, statusMap)}</td>
+  </tr>`).join('');
+}
+
+function principalRows(items, statusMap) {
+  return items.map(p => {
+    const tags = [
+      p.isDC ? '<span class="tag-sm t-dc">DC</span>' : '',
+      p.isGmsa ? '<span class="tag-sm t-gmsa">gMSA</span>' : '',
+      p.unconstrained ? '<span class="tag-sm t-dc">UNCON</span>' : '',
+      p.admincount ? '<span class="tag-sm t-dc">Admin</span>' : '',
+      p.hasspn ? '<span class="tag-sm t-spn">SPN</span>' : '',
+      p.dontreqpreauth ? '<span class="tag-sm t-asrep">ASREP</span>' : '',
+      p.trustedtoauth ? '<span class="tag-sm t-t2a4d">T2A4D</span>' : '',
+    ].filter(Boolean).join('');
+    return `<tr><td class="ov-name">${escHtml(p.name.split('@')[0])}</td><td class="tc-dim">${escHtml(p.type)}</td><td>${p.enabled?'<span style="color:var(--green)">✓</span>':'<span style="color:var(--dim)">✗</span>'}</td><td><div class="ov-tags">${tags||'<span style="color:var(--dim)">—</span>'}</div></td><td>${graphStatusBadges(p, statusMap)}</td></tr>`;
+  }).join('');
+}
+
+function objectRows(items, statusMap) {
+  return items.map(o => `<tr><td class="ov-name">${escHtml(o.name.split('@')[0])}</td><td class="tc-dim">${escHtml(o.type)}</td><td class="tc-dim">${escHtml(o.objectid || '—')}</td><td>${graphStatusBadges(o, statusMap)}</td></tr>`).join('');
+}
+
+function renderOverviewDetail() {
+  const detail = document.getElementById('overviewDetail');
+  if (!detail) return;
+  const kind = S.overviewFocus || 'users';
+  const statusMap = overviewGraphStatusMap();
+  let title = kind;
+  let head = '<tr><th>Name</th><th>Type</th><th>Enabled</th><th>Flags</th><th>Graph</th></tr>';
+  let rows = '';
+  const searchResults = objectSearchMatches(statusMap);
+
+  if ((S.objectSearch || '').trim()) {
+    title = `Search Results: "${S.objectSearch.trim()}"`;
+    head = '<tr><th>Name</th><th>Type</th><th>Source</th><th>Graph</th></tr>';
+    rows = objectSearchRows(searchResults, statusMap);
+  } else if (kind === 'users') {
+    title = 'Users';
+    rows = principalRows(S.principals.filter(p => p.type === 'User' && !p.isMachine), statusMap);
+  } else if (kind === 'computers') {
+    title = 'Computers';
+    rows = principalRows(S.principals.filter(p => p.type === 'Computer'), statusMap);
+  } else if (kind === 'dcs') {
+    title = 'Domain Controllers';
+    rows = principalRows(S.principals.filter(p => p.isDC), statusMap);
+  } else if (kind === 'unconstrained') {
+    title = 'Unconstrained Delegation';
+    rows = principalRows(S.principals.filter(p => p.unconstrained), statusMap);
+  } else if (kind === 'gmsa') {
+    title = 'gMSA';
+    rows = principalRows(S.principals.filter(p => p.isGmsa), statusMap);
+  } else if (kind === 'kerberoastable') {
+    title = 'Kerberoastable Users';
+    rows = principalRows(S.principals.filter(p => p.type === 'User' && !p.isMachine && p.hasspn && p.enabled), statusMap);
+  } else if (kind === 'asrep') {
+    title = 'AS-REP Roastable Users';
+    rows = principalRows(S.principals.filter(p => p.type === 'User' && !p.isMachine && p.dontreqpreauth), statusMap);
+  } else if (['groups','gpos','ous','containers'].includes(kind)) {
+    const typeMap = {groups:'Group', gpos:'GPO', ous:'OU', containers:'Container'};
+    const titleMap = {groups:'Groups', gpos:'GPOs', ous:'OUs', containers:'Containers'};
+    title = titleMap[kind];
+    head = '<tr><th>Name</th><th>Type</th><th>Object ID</th><th>Graph</th></tr>';
+    rows = objectRows(overviewObjectList(typeMap[kind]), statusMap);
+  } else if (kind === 'acls') {
+    title = 'Critical ACEs';
+    head = '<tr><th>Principal</th><th>Right</th><th>Target</th><th>Inherited</th></tr>';
+    rows = (S.graph.raw_acls || []).map(a => `<tr><td class="ov-name">${escHtml(a.principal.split('@')[0])}</td><td>${rp(a.right)}</td><td class="tc-dim">${escHtml(a.target.split('@')[0])}</td><td>${a.inherited?'<span style="color:var(--yellow)">Yes</span>':'<span style="color:var(--dim)">No</span>'}</td></tr>`).join('');
+  } else if (kind === 'paths') {
+    title = 'Attack Paths';
+    head = '<tr><th>From</th><th>Right</th><th>To</th><th>Depth</th></tr>';
+    rows = (S.paths || []).map(p => `<tr><td class="ov-name">${escHtml(p.from.split('@')[0])}</td><td>${rp(p.right)}</td><td class="tc-dim">${escHtml(p.to.split('@')[0])}</td><td>${p.depth}</td></tr>`).join('');
+  }
+
+  const count = (rows.match(/<tr>/g) || []).length;
+  detail.innerHTML = `<div class="sec-title">${escHtml(title)} <span class="cnt">${count}</span></div>
+    <div class="acl-wrap">${rows ? `<table><thead>${head}</thead><tbody>${rows}</tbody></table>` : '<div class="ov-empty">No objects in this category</div>'}</div>`;
 }
 
 
@@ -2218,34 +2618,55 @@ function buildGraphData() {
   // Build nodes + links from S.graph (raw_acls + member_of + deleg)
   const nodeSet = new Map(); // id → node object
   const links   = [];
+  const objects = S.graph.objects || {};
 
   const addNode = (name, forceType) => {
     const key = name.toUpperCase().split('@')[0];
     if (nodeSet.has(key)) return key;
     const principal = S.principals.find(p => p.key === key);
-    let type = forceType || principal?.type || 'User';
-    if (principal?.isDC || principal?.unconstrained) type = 'dc';
-    if (principal?.isGmsa) type = 'gmsa';
+    const obj = objects[key] || {};
+    let type = forceType || obj.type || principal?.type || 'Unknown';
+    const isDC = obj.isDC || principal?.isDC || (type === 'Computer' && obj.unconstrained && key.includes('DC'));
+    const isGmsa = obj.isGmsa || principal?.isGmsa;
+    if (isDC) type = 'dc';
+    if (isGmsa) type = 'gmsa';
     nodeSet.set(key, {
       id: key,
-      label: name.split('@')[0],
+      label: (obj.name || name).split('@')[0],
       type,
       owned: S.owned.has(key),
-      enabled: principal?.enabled ?? true,
-      admincount: principal?.admincount ?? false,
-      t2a4d: principal?.trustedtoauth ?? false,
-      hasspn: principal?.hasspn ?? false,
-      unconstrained: principal?.unconstrained ?? false,
+      enabled: obj.enabled ?? principal?.enabled ?? true,
+      admincount: obj.admincount ?? principal?.admincount ?? false,
+      t2a4d: obj.trustedtoauth ?? principal?.trustedtoauth ?? false,
+      hasspn: obj.hasspn ?? principal?.hasspn ?? false,
+      unconstrained: obj.unconstrained ?? principal?.unconstrained ?? false,
+      objectid: obj.objectid || '',
     });
     return key;
   };
 
   // From raw ACLs
   (S.graph.raw_acls || []).forEach(ace => {
-    const s = addNode(ace.principal, ace.principal_type === 'Group' ? 'Group' : null);
-    const t = addNode(ace.target);
+    const s = addNode(ace.principal, ace.principal_type && ace.principal_type !== '?' ? ace.principal_type : null);
+    const t = addNode(ace.target, ace.target_type);
     const sev = G_SEV_MAP[ace.right] || 4;
     links.push({ source: s, target: t, right: ace.right, sev, id: `${s}|${t}|${ace.right}` });
+  });
+
+  // From structural relationships (Contains, GpLink)
+  (S.graph.structural_edges || []).forEach(edge => {
+    const s = addNode(edge.source, edge.source_type);
+    const t = addNode(edge.target, edge.target_type);
+    const sev = G_SEV_MAP[edge.right] || 4;
+    links.push({
+      source: s,
+      target: t,
+      right: edge.right,
+      sev,
+      structural: true,
+      enforced: edge.enforced ?? false,
+      id: `${s}|${t}|${edge.right}`,
+    });
   });
 
   // From member_of (group memberships)
@@ -2264,25 +2685,46 @@ function buildGraphData() {
   // Mark owned
   nodeSet.forEach((n, key) => { n.owned = S.owned.has(key); });
 
-  // Mark attack path nodes
-  const pathNodeSet = new Set(S.paths.flatMap(p => p.chain?.map(s => s.name.toUpperCase().split('@')[0]) || []));
+  // Mark attack path nodes, including via groups.
+  const { pathNodeSet } = buildAttackPathLinks();
   nodeSet.forEach((n,key) => { n.onPath = pathNodeSet.has(key); });
 
   return { nodes: [...nodeSet.values()], links };
 }
 
 function buildAttackPathLinks() {
-  // Build Set of "source|target" keys that are part of computed attack paths
+  // Build Set of exact "source|target|right" keys that are part of computed attack paths.
   const pathKeys = new Set();
+  const pairKeys = new Set();
+  const exactPairs = new Set();
+  const pathNodeSet = new Set();
+
+  function addPathEdge(source, target, right) {
+    const s = source.toUpperCase().split('@')[0];
+    const t = target.toUpperCase().split('@')[0];
+    pathNodeSet.add(s);
+    pathNodeSet.add(t);
+    if (right) {
+      pathKeys.add(`${s}|${t}|${right}`);
+      exactPairs.add(`${s}|${t}`);
+    }
+    pairKeys.add(`${s}|${t}`);
+  }
+
   S.paths.forEach(p => {
     if (!p.chain) return;
     for (let i = 0; i < p.chain.length - 1; i++) {
-      const s = p.chain[i].name.toUpperCase().split('@')[0];
-      const t = p.chain[i+1].name.toUpperCase().split('@')[0];
-      pathKeys.add(`${s}|${t}`);
+      const current = p.chain[i];
+      const next = p.chain[i+1];
+      if (next.via) {
+        addPathEdge(current.name, next.via, 'MemberOf');
+        addPathEdge(next.via, next.name, next.right);
+      } else {
+        addPathEdge(current.name, next.name, next.right);
+      }
     }
   });
-  return pathKeys;
+  return { pathKeys, pairKeys, exactPairs, pathNodeSet };
 }
 
 function renderGraphTab() {
@@ -2302,6 +2744,17 @@ function renderGraphTab() {
   drawGraph(nodes, links, container);
 }
 
+function gSyncToolbarState() {
+  const modeIds = {all:'gBtnAll', paths:'gBtnPath', owned:'gBtnOwned'};
+  const edgeIds = {all:'gEdgeAll', acl:'gEdgeAcl', structure:'gEdgeStruct'};
+  document.querySelectorAll('.g-btn[id^=gBtn]').forEach(b=>{
+    b.classList.toggle('active', b.id === modeIds[G.mode]);
+  });
+  document.querySelectorAll('.g-btn[id^=gEdge]').forEach(b=>{
+    b.classList.toggle('active', b.id === edgeIds[G.edgeLayer]);
+  });
+}
+
 function initGraphSVG(container) {
   // Clear any previous
   container.innerHTML = '';
@@ -2313,12 +2766,17 @@ function initGraphSVG(container) {
       <button class="g-btn"        id="gBtnPath"  onclick="gSetMode('paths')">Attack paths only</button>
       <button class="g-btn"        id="gBtnOwned" onclick="gSetMode('owned')">Owned + neighbors</button>
       <span style="width:1px;background:var(--border2);margin:0 2px"></span>
+      <button class="g-btn active" id="gEdgeAll"    onclick="gSetEdgeLayer('all')">All edges</button>
+      <button class="g-btn"        id="gEdgeAcl"    onclick="gSetEdgeLayer('acl')">ACL</button>
+      <button class="g-btn"        id="gEdgeStruct" onclick="gSetEdgeLayer('structure')">Structure</button>
+      <span style="width:1px;background:var(--border2);margin:0 2px"></span>
       <button class="g-btn" onclick="gZoomBy(1.3)">+</button>
       <button class="g-btn" onclick="gZoomBy(.77)">−</button>
       <button class="g-btn" onclick="gZoomFit()">⊡</button>
       <button class="g-btn danger" onclick="gClearSel()">✕</button>
     </div>
   `);
+  gSyncToolbarState();
 
   // Legend
   container.insertAdjacentHTML('beforeend', `
@@ -2328,7 +2786,11 @@ function initGraphSVG(container) {
       <div class="g-legend-row"><div class="g-dot" style="background:#ff2244;box-shadow:0 0 4px #ff2244"></div>DC / Unconstrained</div>
       <div class="g-legend-row"><div class="g-dot" style="background:#ff7b2b"></div>Computer</div>
       <div class="g-legend-row"><div class="g-dot" style="background:#c084fc"></div>Group</div>
+      <div class="g-legend-row"><div class="g-dot" style="background:#ff4fa3"></div>GPO</div>
       <div class="g-legend-row"><div class="g-dot" style="background:#00d4ff"></div>User</div>
+      <div class="g-legend-row"><div class="g-dot" style="background:#42d392"></div>OU</div>
+      <div class="g-legend-row"><div class="g-dot" style="background:#8aa4b8"></div>Container</div>
+      <div class="g-legend-row"><div class="g-dot" style="background:#53606a"></div>Compact bucket</div>
       <div class="g-legend-row"><div class="g-dot" style="background:#ffd700"></div>gMSA</div>
       <div class="g-sep"></div>
       <div class="g-legend-title">Edge Severity</div>
@@ -2429,8 +2891,17 @@ function initGraphSVG(container) {
     if (!path?.chain) return;
     const pnSet = new Set(path.chain.map(s=>s.name.toUpperCase().split('@')[0]));
     const plSet = new Set();
+    const pairSet = new Set();
+    const exactPairSet = new Set();
     for (let i=0;i<path.chain.length-1;i++) {
-      plSet.add(`${path.chain[i].name.toUpperCase().split('@')[0]}|${path.chain[i+1].name.toUpperCase().split('@')[0]}`);
+      const s = path.chain[i].name.toUpperCase().split('@')[0];
+      const t = path.chain[i+1].name.toUpperCase().split('@')[0];
+      const right = path.chain[i+1].right;
+      if (right) {
+        plSet.add(`${s}|${t}|${right}`);
+        exactPairSet.add(`${s}|${t}`);
+      }
+      pairSet.add(`${s}|${t}`);
     }
     G.root.selectAll('.g-mc').attr('opacity', function(){
       return pnSet.has(this.dataset.id)?1:.1;
@@ -2439,16 +2910,93 @@ function initGraphSVG(container) {
       return pnSet.has(this.dataset.id)?1:.06;
     });
     G.root.selectAll('.g-link').attr('stroke-opacity', function(){
-      return plSet.has(this.dataset.key)?.9:.04;
+      const hit = plSet.has(this.dataset.key) || (!exactPairSet.has(this.dataset.pair) && pairSet.has(this.dataset.pair));
+      return hit ? .9 : .04;
     }).attr('stroke-width', function(){
-      return plSet.has(this.dataset.key)?2.6:1.2;
+      const hit = plSet.has(this.dataset.key) || (!exactPairSet.has(this.dataset.pair) && pairSet.has(this.dataset.pair));
+      return hit ? 2.6 : 1.2;
     });
     G.root.selectAll('.g-lbl').attr('opacity', function(){
-      return plSet.has(this.dataset.key)?.9:.03;
+      const hit = plSet.has(this.dataset.key) || (!exactPairSet.has(this.dataset.pair) && pairSet.has(this.dataset.pair));
+      return hit ? .9 : .03;
     });
     showGPathBar(path);
     document.getElementById('gInfo').classList.add('hidden');
   }, 5000);
+}
+
+function compactStructureView(nodes, links) {
+  const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const containsBySource = new Map();
+  links.forEach(l => {
+    const source = l.source?.id || l.source;
+    const target = l.target?.id || l.target;
+    const targetNode = nodeById[target];
+    if (l.right !== 'Contains' || !targetNode) return;
+    if (!['User', 'Group'].includes(targetNode.type)) return;
+    if (!containsBySource.has(source)) containsBySource.set(source, []);
+    containsBySource.get(source).push({...l, source, target});
+  });
+
+  const importantName = /(^|\b)(ADMIN|ADMINS|KRBTGT|PROTECTED USERS|KEY ADMINS|DNSADMINS|GROUP POLICY CREATOR|SVC_|RECOVERY)(\b|$)/i;
+  const keepExact = (node) => node?.owned || node?.onPath || node?.type === 'dc' || importantName.test(node?.label || node?.id || '');
+  const collapseTargets = new Map();
+  const bucketByItem = {};
+  const bucketNodes = [];
+  const bucketLinks = [];
+
+  containsBySource.forEach((children, source) => {
+    if (children.length < 10) return;
+    const groups = new Map();
+    children.forEach(l => {
+      const node = nodeById[l.target];
+      if (keepExact(node)) return;
+      const type = node.type || 'Object';
+      if (!groups.has(type)) groups.set(type, []);
+      groups.get(type).push(l);
+    });
+    groups.forEach((items, type) => {
+      if (items.length < 4) return;
+      const id = `__STRUCT_BUCKET__${source}__${type}`;
+      items.forEach(l => collapseTargets.set(`${l.source}|${l.target}|Contains`, id));
+      items.forEach(l => bucketByItem[l.target] = id);
+      bucketNodes.push({
+        id,
+        label: `${items.length} ${type}${items.length===1?'':'s'}`,
+        type: 'Bucket',
+        bucket: true,
+        bucketSource: source,
+        bucketType: type,
+        bucketCount: items.length,
+        bucketItems: items.map(l => l.target),
+        owned: false,
+      });
+      bucketLinks.push({
+        source,
+        target: id,
+        right: 'Contains',
+        sev: 4,
+        structural: true,
+        compacted: true,
+        id: `${source}|${id}|Contains`,
+      });
+    });
+  });
+
+  if (!bucketNodes.length) return { nodes, links, bucketByItem };
+  const compactedLinks = links.filter(l => {
+    const source = l.source?.id || l.source;
+    const target = l.target?.id || l.target;
+    return !collapseTargets.has(`${source}|${target}|${l.right}`);
+  }).concat(bucketLinks);
+
+  const visibleIds = new Set();
+  compactedLinks.forEach(l => {
+    visibleIds.add(l.source?.id || l.source);
+    visibleIds.add(l.target?.id || l.target);
+  });
+  const compactedNodes = nodes.filter(n => visibleIds.has(n.id)).concat(bucketNodes);
+  return { nodes: compactedNodes, links: compactedLinks, bucketByItem };
 }
 
 function drawGraph(nodes, links, container) {
@@ -2457,13 +3005,30 @@ function drawGraph(nodes, links, container) {
   const W = container.clientWidth  || window.innerWidth  - 290;
   const H = container.clientHeight || window.innerHeight - 48;
 
+  G.allNodes = nodes.map(n => ({...n}));
+  G.allNById = Object.fromEntries(G.allNodes.map(n => [n.id, n]));
+  G.allLinks = links.map(l => {
+    const source = l.source?.id || l.source;
+    const target = l.target?.id || l.target;
+    return {...l, source, target, _key: `${source}|${target}|${l.right}`, _pairKey: `${source}|${target}`};
+  });
+  G.bucketByItem = {};
+
   // Filter by mode
   let visNodes = nodes, visLinks = links;
   if (G.mode === 'paths') {
-    const pathNodeSet = new Set(S.paths.flatMap(p=>p.chain?.map(s=>s.name.toUpperCase().split('@')[0])||[]));
+    const { pathKeys, pairKeys, exactPairs, pathNodeSet } = buildAttackPathLinks();
+    visLinks = links.filter(l => {
+      const s = l.source?.id || l.source;
+      const t = l.target?.id || l.target;
+      const pair = `${s}|${t}`;
+      return pathKeys.has(`${pair}|${l.right}`) || (!exactPairs.has(pair) && pairKeys.has(pair));
+    });
+    visLinks.forEach(l => {
+      pathNodeSet.add(l.source?.id || l.source);
+      pathNodeSet.add(l.target?.id || l.target);
+    });
     visNodes = nodes.filter(n => pathNodeSet.has(n.id));
-    const visSet = new Set(visNodes.map(n=>n.id));
-    visLinks = links.filter(l => visSet.has(l.source?.id||l.source) && visSet.has(l.target?.id||l.target));
   } else if (G.mode === 'owned') {
     const ownedSet = new Set([...S.owned]);
     const connSet = new Set([...S.owned]);
@@ -2476,13 +3041,46 @@ function drawGraph(nodes, links, container) {
     visLinks = links.filter(l => visSet.has(l.source?.id||l.source) && visSet.has(l.target?.id||l.target));
   }
 
-  // Deduplicate links (keep highest severity)
+  if (G.edgeLayer === 'acl') {
+    visLinks = visLinks.filter(l => !l.structural);
+  } else if (G.edgeLayer === 'structure') {
+    visLinks = visLinks.filter(l => l.structural);
+    const compacted = compactStructureView(visNodes, visLinks);
+    visNodes = compacted.nodes;
+    visLinks = compacted.links;
+    G.bucketByItem = compacted.bucketByItem || {};
+  }
+  if (G.edgeLayer !== 'all') {
+    const edgeNodeSet = new Set();
+    visLinks.forEach(l => {
+      edgeNodeSet.add(l.source?.id || l.source);
+      edgeNodeSet.add(l.target?.id || l.target);
+    });
+    visNodes = visNodes.filter(n => edgeNodeSet.has(n.id));
+  }
+
+  // Deduplicate exact links only. Keep distinct rights between the same nodes.
   const linkMap = new Map();
   visLinks.forEach(l => {
-    const key = `${l.source?.id||l.source}|${l.target?.id||l.target}`;
-    if (!linkMap.has(key) || linkMap.get(key).sev > l.sev) linkMap.set(key, {...l, _key: key});
+    const s = l.source?.id || l.source;
+    const t = l.target?.id || l.target;
+    const key = `${s}|${t}|${l.right}`;
+    if (!linkMap.has(key) || linkMap.get(key).sev > l.sev) {
+      linkMap.set(key, {...l, _key: key, _pairKey: `${s}|${t}`});
+    }
   });
   const dedupLinks = [...linkMap.values()];
+  const pairCounts = new Map();
+  dedupLinks.forEach(l => pairCounts.set(l._pairKey, (pairCounts.get(l._pairKey) || 0) + 1));
+  const pairSeen = new Map();
+  dedupLinks.forEach(l => {
+    const idx = pairSeen.get(l._pairKey) || 0;
+    const count = pairCounts.get(l._pairKey) || 1;
+    pairSeen.set(l._pairKey, idx + 1);
+    l._parallelIndex = idx;
+    l._parallelCount = count;
+    l._curveOffset = (idx - (count - 1) / 2) * 28;
+  });
 
   // Stop old sim
   if (G.sim) G.sim.stop();
@@ -2494,7 +3092,8 @@ function drawGraph(nodes, links, container) {
     ...l,
     source: l.source?.id||l.source,
     target: l.target?.id||l.target,
-    _key: `${l.source?.id||l.source}|${l.target?.id||l.target}`,
+    _key: `${l.source?.id||l.source}|${l.target?.id||l.target}|${l.right}`,
+    _pairKey: `${l.source?.id||l.source}|${l.target?.id||l.target}`,
   }));
 
   // Clear previous drawing
@@ -2510,16 +3109,20 @@ function drawGraph(nodes, links, container) {
     .data(simLinks).enter().append('path')
     .attr('class','g-link')
     .attr('data-key', d => d._key)
+    .attr('data-pair', d => d._pairKey)
     .attr('fill','none')
     .attr('stroke', d => G_SEV_COLOR[d.sev])
     .attr('stroke-width', 1.6)
-    .attr('stroke-opacity', .65)
+    .attr('stroke-opacity', d => d.structural ? .38 : .65)
+    .attr('stroke-dasharray', d => d.structural ? '4 5' : null)
     .attr('marker-end', d => `url(#gArr${d.sev})`);
 
   // Invisible wide hit area on top of each edge for easier hover
   const linkHit = linkLayer.selectAll('path.g-link-hit')
     .data(simLinks).enter().append('path')
     .attr('class','g-link-hit')
+    .attr('data-key', d => d._key)
+    .attr('data-pair', d => d._pairKey)
     .attr('fill','none')
     .attr('stroke','transparent')
     .attr('stroke-width', 14)
@@ -2537,7 +3140,7 @@ function drawGraph(nodes, links, container) {
     })
     .on('mouseleave', (e, d) => {
       linkPaths.filter(l => l._key === d._key)
-        .attr('stroke-width', 1.6).attr('stroke-opacity', .65);
+        .attr('stroke-width', 1.6).attr('stroke-opacity', l => l.structural ? .38 : .65);
       scheduleHideEdgeTip();
     });
 
@@ -2546,6 +3149,7 @@ function drawGraph(nodes, links, container) {
     .data(simLinks.filter(l => !G_SKIP_LABEL.has(l.right))).enter()
     .append('text').attr('class','g-lbl')
     .attr('data-key', d => d._key)
+    .attr('data-pair', d => d._pairKey)
     .attr('text-anchor','middle').attr('dominant-baseline','central')
     .attr('font-family','Share Tech Mono,monospace').attr('font-size',11)
     .attr('fill', d => G_SEV_COLOR[d.sev]).attr('opacity',.65)
@@ -2617,14 +3221,23 @@ function drawGraph(nodes, links, container) {
       const pathD = d=>{
         const sx=d.source.x,sy=d.source.y,tx=d.target.x,ty=d.target.y;
         const dx=tx-sx,dy=ty-sy,len=Math.hypot(dx,dy)||1;
-        const mx=(sx+tx)/2-dy/len*16, my=(sy+ty)/2+dx/len*16;
+        const curve = d._curveOffset ?? 0;
+        const mx=(sx+tx)/2-dy/len*(16 + curve), my=(sy+ty)/2+dx/len*(16 + curve);
         return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
       };
       linkPaths.attr('d', pathD);
       linkHit.attr('d', pathD);
       linkLabels
-        .attr('x',d=>(d.source.x+d.target.x)/2)
-        .attr('y',d=>(d.source.y+d.target.y)/2-10);
+        .attr('x',d=>{
+          const sx=d.source.x,sy=d.source.y,tx=d.target.x,ty=d.target.y;
+          const dx=tx-sx,dy=ty-sy,len=Math.hypot(dx,dy)||1;
+          return (sx+tx)/2-dy/len*((d._curveOffset ?? 0)+8);
+        })
+        .attr('y',d=>{
+          const sx=d.source.x,sy=d.source.y,tx=d.target.x,ty=d.target.y;
+          const dx=tx-sx,dy=ty-sy,len=Math.hypot(dx,dy)||1;
+          return (sy+ty)/2+dx/len*((d._curveOffset ?? 0)+8)-10;
+        });
       nodeGs.attr('transform',d=>`translate(${d.x},${d.y})`);
     });
 
@@ -2636,13 +3249,14 @@ function drawGraph(nodes, links, container) {
   G.linkHit    = linkHit;
   G.linkLabels = linkLabels;
   G.nodeGs     = nodeGs;
+  applyGraphSearch();
 
   // Highlight owned attack paths immediately
   setTimeout(() => {
-    const pathKeys = buildAttackPathLinks();
+    const { pathKeys, pairKeys, exactPairs } = buildAttackPathLinks();
     if (pathKeys.size) {
-      linkPaths.attr('stroke-opacity', l => pathKeys.has(l._key)?.85:.4)
-               .attr('stroke-width',   l => pathKeys.has(l._key)?2.4:1.4);
+      linkPaths.attr('stroke-opacity', l => (pathKeys.has(l._key)||(!exactPairs.has(l._pairKey)&&pairKeys.has(l._pairKey))) ? .85 : .4)
+               .attr('stroke-width',   l => (pathKeys.has(l._key)||(!exactPairs.has(l._pairKey)&&pairKeys.has(l._pairKey)))?2.4:1.4);
     }
   }, 1800);
 }
@@ -2674,6 +3288,122 @@ function gOnNodeClick(d, simLinks, simNodes) {
   else document.getElementById('gPathBar').style.display='none';
 }
 
+function gFocusNode(id, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  const visible = G.simNodes?.find(n => n.id === id);
+  if (visible) {
+    if (G.selNode === id) {
+      showGInfo(visible, G.simLinks || []);
+      return;
+    }
+    gOnNodeClick(visible, G.simLinks || [], G.simNodes || []);
+    return;
+  }
+  const full = G.allNById?.[id];
+  if (full) {
+    G.selNode = id;
+    if (G.root) {
+      G.root.selectAll('.g-mc').attr('opacity', .12);
+      G.root.selectAll('.g-nl').attr('opacity', .08);
+      if (G.linkPaths) G.linkPaths.attr('stroke-opacity', .04).attr('stroke-width', 1.2);
+      if (G.linkLabels) G.linkLabels.attr('opacity', .03);
+    }
+    showGInfo(full, G.simLinks || []);
+  }
+}
+
+function graphSearchNodeFromItem(item) {
+  const obj = G.allNById?.[item.key] || {};
+  return {
+    ...obj,
+    id: item.key,
+    label: (item.name || item.key).split('@')[0],
+    type: obj.type || item.type || 'Unknown',
+    enabled: item.enabled,
+    isSearchOnly: true,
+  };
+}
+
+function markGraphSearchFocus(id) {
+  if (!G.nodeGs) return;
+  G.nodeGs.selectAll('.g-search-ring').remove();
+  const target = G.nodeGs.filter(d => d.id === id);
+  target.append('circle')
+    .attr('class','g-search-ring')
+    .attr('r', d => (G_NODE_RADIUS[d.type] || 14) + 11)
+    .attr('fill','none')
+    .attr('stroke','#ffd700')
+    .attr('stroke-width',2.2)
+    .attr('stroke-dasharray','4 3')
+    .attr('pointer-events','none');
+}
+
+function clearGraphSearchFocus() {
+  if (G.nodeGs) G.nodeGs.selectAll('.g-search-ring').remove();
+}
+
+function showSearchOnlyInfo(item, reason) {
+  const panel = document.getElementById('gInfo');
+  if (!panel) return;
+  document.getElementById('gIIcon').textContent = G_NODE_ICON[item.type] || '•';
+  document.getElementById('gIName').textContent = (item.name || item.key).split('@')[0];
+  document.getElementById('gIType').textContent = `${item.type || 'Object'} // SEARCH MATCH`;
+  document.getElementById('gIBody').innerHTML =
+    `<div class="g-info-row"><span style="color:var(--dim2)">Graph status</span><span class="ip-val">${escHtml(reason)}</span></div>`;
+  document.getElementById('gIEdges').innerHTML =
+    '<div class="g-edge-empty">No visible node exists for this object in the current graph view</div>';
+  panel.classList.remove('hidden');
+}
+
+function applyGraphSearch() {
+  if (S.currentTab !== 'graph' || !G.root) return;
+  clearGraphSearchFocus();
+  const q = (S.objectSearch || '').trim();
+  if (!q) return;
+  const statusMap = overviewGraphStatusMap();
+  const matches = objectSearchMatches(statusMap);
+  if (!matches.length) {
+    showSearchOnlyInfo({name:q, key:q.toUpperCase(), type:'Object'}, 'No match');
+    return;
+  }
+  const item = matches[0];
+  const visible = G.simNodes?.find(n => n.id === item.key);
+  if (visible) {
+    gFocusNode(item.key);
+    markGraphSearchFocus(item.key);
+    return;
+  }
+  if (item.status?.bucketed && G.edgeLayer !== 'structure') {
+    G.edgeLayer = 'structure';
+    gSyncToolbarState();
+    const { nodes, links } = buildGraphData();
+    const container = document.getElementById('graphView');
+    drawGraph(nodes, links, container);
+    return;
+  }
+  const bucketId = G.bucketByItem?.[item.key];
+  const bucket = bucketId ? G.simNodes?.find(n => n.id === bucketId) : null;
+  if (bucket) {
+    markGraphSearchFocus(bucketId);
+    showGInfo(graphSearchNodeFromItem(item), G.simLinks || []);
+    return;
+  }
+  showSearchOnlyInfo(item, item.status?.visible ? 'Hidden by current filters' : 'Disconnected');
+}
+
+function gToggleInfoSection(key, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  G.infoExpanded[key] = !G.infoExpanded[key];
+  const node = G.simNodes?.find(n => n.id === G.selNode) || G.allNById?.[G.selNode];
+  if (node) showGInfo(node, G.simLinks || []);
+}
+
 function gOnHover(e,d) {
   const t = document.getElementById('tip');
   if (!t) return;
@@ -2688,13 +3418,14 @@ function gClearSel() {
   G.root.selectAll('.g-mc').attr('opacity',1);
   G.root.selectAll('.g-nl').attr('opacity',1);
   G.root.selectAll('.g-ring').attr('opacity',.3);
-  if (G.linkPaths)  G.linkPaths.attr('stroke-opacity',.65).attr('stroke-width',1.6);
+  if (G.linkPaths)  G.linkPaths.attr('stroke-opacity', l => l.structural ? .38 : .65).attr('stroke-width',1.6);
   if (G.linkLabels) G.linkLabels.attr('opacity',.65);
   document.getElementById('gInfo').classList.add('hidden');
   document.getElementById('gPathBar').style.display='none';
 }
 
 function showGInfo(d, simLinks) {
+  G.selNode = d.id;
   document.getElementById('gIIcon').textContent = G_NODE_ICON[d.type]||'👤';
   document.getElementById('gIName').textContent = d.label;
   document.getElementById('gIType').textContent = d.type+(d.owned?' // OWNED ✓':'');
@@ -2706,21 +3437,93 @@ function showGInfo(d, simLinks) {
   if(d.unconstrained) rows.push(['Delegation','UNCONSTRAINED ⚡','red']);
   if(d.owned)      rows.push(['Status','OWNED ✓','green']);
 
+  const fullLinks = G.allLinks || simLinks.map(l => ({
+    ...l,
+    source: l.source?.id || l.source,
+    target: l.target?.id || l.target,
+  }));
+  const fullNodes = G.allNById || G.nById || {};
+  const outL=fullLinks.filter(l=>l.source===d.id);
+  const inL =fullLinks.filter(l=>l.target===d.id);
+  const nodeName = id => escHtml(fullNodes[id]?.label || G.nById?.[id]?.label || id);
+  const nodeType = id => escHtml(fullNodes[id]?.type || G.nById?.[id]?.type || '');
+  const edgeRow = (l, oid, meta='') => {
+    const c=G_SEV_COLOR[l.sev];
+    return `<div class="g-edge-row clickable" data-goto="${escAttr(oid)}" onclick="gFocusNode(this.dataset.goto, event)">
+      <span class="g-badge" style="background:${c}18;color:${c};border:1px solid ${c}33">${escHtml(l.right)}</span>
+      <span class="g-edge-name" title="${nodeName(oid)}">${nodeName(oid)}</span>
+      <span class="g-edge-meta">${escHtml(meta || nodeType(oid))}</span>
+    </div>`;
+  };
+  const section = (title, edges, makeRow) => {
+    if (!edges.length) return '';
+    const key = `${d.id}|${title}`;
+    const expanded = !!G.infoExpanded[key];
+    const shown = expanded ? edges : edges.slice(0,7);
+    const body = shown.map(makeRow).join('');
+    const more = edges.length > 7
+      ? `<button class="g-edge-more" data-section="${escAttr(key)}" onclick="gToggleInfoSection(this.dataset.section, event)">${expanded ? 'show less' : `+${edges.length-7} more`}</button>`
+      : '';
+    return `<div class="g-edge-section"><div class="g-edge-title">${escHtml(title)}</div>${body}${more}</div>`;
+  };
+
+  if (d.bucket) {
+    rows.push(['Aggregated', `${d.bucketCount} ${d.bucketType}${d.bucketCount===1?'':'s'}`, '']);
+    rows.push(['Located in', nodeName(d.bucketSource), '']);
+    document.getElementById('gIBody').innerHTML=rows.map(([l,v,c])=>
+      `<div class="g-info-row"><span style="color:var(--dim2)">${escHtml(l)}</span><span class="ip-val ${c}">${v}</span></div>`
+    ).join('');
+    const items = d.bucketItems || [];
+    const key = `${d.id}|Aggregated objects`;
+    const expanded = !!G.infoExpanded[key];
+    const shownItems = expanded ? items : items.slice(0,12);
+    const body = shownItems.map(id => `<div class="g-edge-row clickable" data-goto="${escAttr(id)}" onclick="gFocusNode(this.dataset.goto, event)">
+      <span class="g-badge" style="background:#53606a18;color:#8aa4b8;border:1px solid #8aa4b833">${escHtml(nodeType(id) || d.bucketType)}</span>
+      <span class="g-edge-name" title="${nodeName(id)}">${nodeName(id)}</span>
+    </div>`).join('');
+    const more = items.length > 12
+      ? `<button class="g-edge-more" data-section="${escAttr(key)}" onclick="gToggleInfoSection(this.dataset.section, event)">${expanded ? 'show less' : `+${items.length-12} more`}</button>`
+      : '';
+    document.getElementById('gIEdges').innerHTML =
+      `<div class="g-edge-section"><div class="g-edge-title">Aggregated objects</div>${body}${more}</div>`;
+    document.getElementById('gInfo').classList.remove('hidden');
+    return;
+  }
+
+  const contains = outL.filter(l => l.right === 'Contains');
+  const containedBy = inL.filter(l => l.right === 'Contains');
+  const linkedTo = outL.filter(l => l.right === 'GpLink');
+  const linkedGpos = inL.filter(l => l.right === 'GpLink');
+  const memberOf = outL.filter(l => l.right === 'MemberOf');
+  const members = inL.filter(l => l.right === 'MemberOf');
+  const aclOut = outL.filter(l => !l.structural && l.right !== 'MemberOf');
+  const aclIn = inL.filter(l => !l.structural && l.right !== 'MemberOf');
+
+  if (containedBy.length) rows.push(['Located in', nodeName(containedBy[0].source), '']);
+  if (contains.length) rows.push(['Contains', `${contains.length} object${contains.length===1?'':'s'}`, '']);
+  if (linkedGpos.length) rows.push(['Linked GPOs', `${linkedGpos.length}`, '']);
+  if (linkedTo.length) rows.push(['Linked targets', `${linkedTo.length}`, '']);
+  if (memberOf.length) rows.push(['Member of', `${memberOf.length} group${memberOf.length===1?'':'s'}`, '']);
+  if (members.length) rows.push(['Members', `${members.length} object${members.length===1?'':'s'}`, '']);
+  if (aclOut.length || aclIn.length) rows.push(['ACL edges', `${aclOut.length} out / ${aclIn.length} in`, '']);
+  else rows.push(['ACL edges', 'None in loaded data', '']);
+
   document.getElementById('gIBody').innerHTML=rows.map(([l,v,c])=>
-    `<div class="g-info-row"><span style="color:var(--dim2)">${l}</span><span class="ip-val ${c}">${v}</span></div>`
+    `<div class="g-info-row"><span style="color:var(--dim2)">${escHtml(l)}</span><span class="ip-val ${c}">${v}</span></div>`
   ).join('');
 
-  const outL=simLinks.filter(l=>l.source.id===d.id).map(l=>({...l,dir:'→',oid:l.target.id}));
-  const inL =simLinks.filter(l=>l.target.id===d.id).map(l=>({...l,dir:'←',oid:l.source.id}));
-  const all=[...outL,...inL];
-  document.getElementById('gIEdges').innerHTML=all.slice(0,6).map(l=>{
-    const c=G_SEV_COLOR[l.sev];
-    return `<div class="g-edge-row">
-      <span class="g-badge" style="background:${c}18;color:${c};border:1px solid ${c}33">${l.right}</span>
-      <span style="color:var(--dim)">${l.dir}</span>
-      <span style="color:var(--dim2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${G.nById[l.oid]?.label||l.oid}</span>
-    </div>`;
-  }).join('')+(all.length>6?`<div style="font-size:.52em;color:var(--dim);text-align:right;margin-top:2px">+${all.length-6} more</div>`:'');
+  const html = [
+    section('Contains', contains, l => edgeRow(l, l.target)),
+    section('Contained by', containedBy, l => edgeRow(l, l.source)),
+    section('Linked GPO targets', linkedTo, l => edgeRow(l, l.target, l.enforced ? 'enforced' : nodeType(l.target))),
+    section('Linked GPOs', linkedGpos, l => edgeRow(l, l.source, l.enforced ? 'enforced' : nodeType(l.source))),
+    section('Member of', memberOf, l => edgeRow(l, l.target)),
+    section('Members', members, l => edgeRow(l, l.source)),
+    section('Rights from this object', aclOut, l => edgeRow(l, l.target)),
+    section('Rights targeting this object', aclIn, l => edgeRow(l, l.source)),
+  ].filter(Boolean).join('');
+
+  document.getElementById('gIEdges').innerHTML = html || '<div class="g-edge-empty">No visible relationships in the current graph view</div>';
 
   document.getElementById('gInfo').classList.remove('hidden');
 }
@@ -2731,7 +3534,12 @@ function showGPathBar(path) {
   path.chain.forEach((step,i)=>{
     html+=`<span class="g-pn">${step.name.split('@')[0]}</span>`;
     if(i<path.chain.length-1&&path.chain[i+1].right){
-      html+=`<span class="g-pr">${path.chain[i+1].right}</span><span class="g-pa">→</span>`;
+      const next = path.chain[i+1];
+      if (next.via) {
+        html+=`<span class="g-pr">MemberOf</span><span class="g-pa">→</span><span class="g-pn">${next.via.split('@')[0]}</span><span class="g-pr">${next.right}</span><span class="g-pa">→</span>`;
+      } else {
+        html+=`<span class="g-pr">${next.right}</span><span class="g-pa">→</span>`;
+      }
     }
   });
   document.getElementById('gPChain').innerHTML=html;
@@ -2741,9 +3549,19 @@ function showGPathBar(path) {
 function gSetMode(mode) {
   G.mode = mode;
   // Don't reset G.initialized — keep the SVG/zoom/intervals alive, just redraw nodes
-  document.querySelectorAll('.g-btn[id^=gBtn]').forEach(b=>{
-    b.classList.toggle('active', b.id===`gBtn${mode.charAt(0).toUpperCase()+mode.slice(1)}`);
-  });
+  gSyncToolbarState();
+  if (!G.svg) {
+    renderGraphTab();
+  } else {
+    const { nodes, links } = buildGraphData();
+    const container = document.getElementById('graphView');
+    drawGraph(nodes, links, container);
+  }
+}
+
+function gSetEdgeLayer(layer) {
+  G.edgeLayer = layer;
+  gSyncToolbarState();
   if (!G.svg) {
     renderGraphTab();
   } else {
