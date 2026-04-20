@@ -13,7 +13,7 @@ Special thanks for the Bober Edition version.
 Install the wheel with `pipx`:
 
 ```bash
-pipx install dist/bh_analyzer_bober-1.4.1-py3-none-any.whl
+pipx install dist/bh_analyzer_bober-1.4.2-py3-none-any.whl
 ```
 
 For the optional production WSGI server dependency:

@@ -29,6 +29,7 @@ CRITICAL_RIGHTS = {
     'AddSelf', 'AddMember',
     'GetChanges', 'GetChangesAll', 'GetChangesInFilteredSet', 'ReadLAPSPassword',
     'SyncLAPSPassword', 'WriteGPLink', 'Contains', 'GpLink',
+    'AdminTo', 'CanRDP', 'CanPSRemote', 'ExecuteDCOM', 'SQLAdmin',
 }
 
 NOISE = {
@@ -47,6 +48,7 @@ SEVERITY = {
     'WriteAccountRestrictions': 12, 'AddAllowedToAct': 12, 'AllowedToAct': 12,
     'GetChangesInFilteredSet': 12, 'AddSelf': 13, 'AddMember': 14,
     'WriteGPLink': 13, 'ReadLAPSPassword': 15, 'SyncLAPSPassword': 15,
+    'AdminTo': 16, 'CanRDP': 17, 'CanPSRemote': 17, 'ExecuteDCOM': 17, 'SQLAdmin': 17,
     'Contains': 90, 'GpLink': 90,
 }
 
@@ -1384,6 +1386,20 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-btn:hover,.g-btn.active { border-color:var(--cyan); color:var(--cyan); background:rgba(0,212,255,.07); }
 .g-btn.danger { border-color:rgba(255,34,68,.3); color:var(--red); }
 .g-btn.danger:hover { background:rgba(255,34,68,.08); }
+.g-filter-panel {
+  position:absolute; top:52px; left:50%; transform:translateX(-50%);
+  z-index:51; display:flex; flex-wrap:wrap; gap:5px; max-width:min(760px,calc(100% - 320px));
+  background:rgba(8,15,24,.92); border:1px solid var(--border2);
+  border-radius:6px; padding:7px 9px; backdrop-filter:blur(6px);
+}
+.g-filter-panel.hidden { display:none; }
+.g-filter-btn {
+  background:transparent; border:1px solid var(--border2); color:var(--dim);
+  padding:3px 8px; border-radius:3px; font-family:'Share Tech Mono',monospace;
+  font-size:.72em; cursor:pointer; letter-spacing:.7px; transition:all .15s;
+}
+.g-filter-btn.active { border-color:var(--cyan); color:var(--cyan); background:rgba(0,212,255,.07); }
+.g-filter-btn:hover { border-color:var(--cyan); color:var(--cyan); }
 
 /* graph legend */
 .g-legend {
@@ -1426,6 +1442,14 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-edge-meta { color:var(--dim); font-size:.80em; white-space:nowrap; }
 .g-edge-more { align-self:flex-end; background:transparent; border:0; color:var(--cyan); cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:.72em; padding:2px 3px; }
 .g-edge-more:hover { text-decoration:underline; }
+.g-owned-action {
+  width:100%; background:rgba(0,255,136,.06); border:1px solid rgba(0,255,136,.28);
+  color:var(--green); border-radius:4px; padding:5px 8px; margin-top:4px;
+  font-family:'Share Tech Mono',monospace; font-size:.76em; cursor:pointer; letter-spacing:.7px;
+}
+.g-owned-action.remove { background:rgba(255,34,68,.06); border-color:rgba(255,34,68,.28); color:var(--red); }
+.g-owned-action:hover { border-color:currentColor; background:rgba(0,212,255,.08); }
+.g-owned-note { color:var(--dim); font-size:.72em; line-height:1.45; padding-top:2px; }
 
 /* graph path bar */
 .g-pathbar {
@@ -1464,6 +1488,20 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-btn:hover,.g-btn.active { border-color:var(--cyan); color:var(--cyan); background:rgba(0,212,255,.07); }
 .g-btn.danger { border-color:rgba(255,34,68,.3); color:var(--red); }
 .g-btn.danger:hover { background:rgba(255,34,68,.08); }
+.g-filter-panel {
+  position:absolute; top:52px; left:50%; transform:translateX(-50%);
+  z-index:51; display:flex; flex-wrap:wrap; gap:5px; max-width:min(760px,calc(100% - 320px));
+  background:rgba(8,15,24,.92); border:1px solid var(--border2);
+  border-radius:6px; padding:7px 9px; backdrop-filter:blur(6px);
+}
+.g-filter-panel.hidden { display:none; }
+.g-filter-btn {
+  background:transparent; border:1px solid var(--border2); color:var(--dim);
+  padding:3px 8px; border-radius:3px; font-family:'Share Tech Mono',monospace;
+  font-size:.72em; cursor:pointer; letter-spacing:.7px; transition:all .15s;
+}
+.g-filter-btn.active { border-color:var(--cyan); color:var(--cyan); background:rgba(0,212,255,.07); }
+.g-filter-btn:hover { border-color:var(--cyan); color:var(--cyan); }
 
 /* graph legend */
 .g-legend {
@@ -1506,6 +1544,14 @@ tr:hover td{background:rgba(0,212,255,.02)}
 .g-edge-meta { color:var(--dim); font-size:.80em; white-space:nowrap; }
 .g-edge-more { align-self:flex-end; background:transparent; border:0; color:var(--cyan); cursor:pointer; font-family:'Share Tech Mono',monospace; font-size:.72em; padding:2px 3px; }
 .g-edge-more:hover { text-decoration:underline; }
+.g-owned-action {
+  width:100%; background:rgba(0,255,136,.06); border:1px solid rgba(0,255,136,.28);
+  color:var(--green); border-radius:4px; padding:5px 8px; margin-top:4px;
+  font-family:'Share Tech Mono',monospace; font-size:.76em; cursor:pointer; letter-spacing:.7px;
+}
+.g-owned-action.remove { background:rgba(255,34,68,.06); border-color:rgba(255,34,68,.28); color:var(--red); }
+.g-owned-action:hover { border-color:currentColor; background:rgba(0,212,255,.08); }
+.g-owned-note { color:var(--dim); font-size:.72em; line-height:1.45; padding-top:2px; }
 
 /* graph path bar */
 .g-pathbar {
@@ -1716,7 +1762,8 @@ tr:hover td{background:rgba(0,212,255,.02)}
 const G = {
   svg: null, root: null, zoom: null, sim: null,
   initialized: false, selNode: null,
-  mode: 'all', edgeLayer: 'all',
+  mode: 'smart', edgeLayer: 'all',
+  edgeFilters: null, filterPanelOpen: false,
   infoExpanded: {},
   cycleIdx: -1, cycleTimer: null, lastAct: Date.now(),
 };
@@ -1727,8 +1774,22 @@ const G_NODE_STROKE = {User:'#007799',Computer:'#aa4400',Group:'#7744aa',GPO:'#a
 const G_NODE_RADIUS = {User:13,Computer:15,Group:17,GPO:16,Domain:19,OU:16,Container:15,Bucket:16,dc:21,gmsa:12};
 const G_NODE_ICON   = {User:'👤',Computer:'🖥',Group:'👥',GPO:'📜',Domain:'🌐',OU:'▣',Container:'⬚',Bucket:'⋯',dc:'🏴‍☠️',gmsa:'🔑'};
 const G_SEV_COLOR   = {1:'#ff2244',2:'#ff7b2b',3:'#ffd700',4:'#00ff88'};
-const G_SEV_MAP     = {GenericAll:1,DCSync:1,GetChangesAll:1,GetChanges:1,GetChangesInFilteredSet:2,WriteDacl:2,WriteOwner:2,Owns:2,AllExtendedRights:2,ForceChangePassword:3,GenericWrite:3,WriteSPN:3,WriteGPLink:3,ReadGMSAPassword:4,SyncLAPSPassword:4,AddKeyCredentialLink:3,WriteAccountRestrictions:3,AddAllowedToAct:3,AllowedToAct:3,AddMember:4,AddSelf:4,MemberOf:4,Contains:4,ReadLAPSPassword:4};
+const G_SEV_MAP     = {GenericAll:1,DCSync:1,GetChangesAll:1,GetChanges:1,GetChangesInFilteredSet:2,WriteDacl:2,WriteOwner:2,Owns:2,AllExtendedRights:2,ForceChangePassword:3,GenericWrite:3,WriteSPN:3,WriteGPLink:3,AdminTo:3,CanRDP:3,CanPSRemote:3,ExecuteDCOM:3,SQLAdmin:3,ReadGMSAPassword:4,SyncLAPSPassword:4,AddKeyCredentialLink:3,WriteAccountRestrictions:3,AddAllowedToAct:3,AllowedToAct:3,AddMember:4,AddSelf:4,MemberOf:4,Contains:4,ReadLAPSPassword:4};
 const G_SKIP_LABEL  = new Set(['MemberOf','Contains']);
+const G_FILTER_DEFS = [
+  {key:'memberof', label:'MemberOf'},
+  {key:'contains', label:'Contains'},
+  {key:'gplink', label:'GpLink'},
+  {key:'critical', label:'Critical ACL'},
+  {key:'write', label:'Write/Own/DCSync'},
+  {key:'delegation', label:'Delegation'},
+  {key:'remote', label:'Remote mgmt'},
+  {key:'path', label:'Path edges'},
+];
+const G_WRITE_RIGHTS = new Set(['GenericAll','GenericWrite','WriteDacl','WriteOwner','Owns','AllExtendedRights','ForceChangePassword','WriteSPN','AddMember','AddSelf','AddKeyCredentialLink','DCSync','GetChanges','GetChangesAll','GetChangesInFilteredSet']);
+const G_DELEG_RIGHTS = new Set(['AllowedToDelegate','AllowedToAct','AddAllowedToAct','WriteAccountRestrictions','WriteGPLink']);
+const G_REMOTE_RIGHTS = new Set(['AdminTo','CanRDP','CanPSRemote','ExecuteDCOM','SQLAdmin']);
+const G_SMART_NAME_RE = /(^|\b)(REMOTE MANAGEMENT USERS|REMOTE DESKTOP USERS|DISTRIBUTED COM USERS|WINRM|PSREMOTE|SQLADMIN|DNSADMINS|PROTECTED USERS|KEY ADMINS|GROUP POLICY CREATOR OWNERS)(\b|$)/i;
 
 // ── STATE ──
 let S = {
@@ -2017,6 +2078,16 @@ async function toggleOwned(key) {
   if (S.currentTab === 'paths') renderPathsTab();
   else if (S.currentTab === 'overview') renderOverviewTab();
   else if (S.currentTab === 'graph') renderGraphTab();
+}
+
+async function toggleGraphStartingPoint(key, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  await toggleOwned(key);
+  const node = G.simNodes?.find(n => n.id === key) || G.allNById?.[key];
+  if (node) showGInfo({...node, owned:S.owned.has(key)}, G.simLinks || []);
 }
 
 function switchTab(tab) {
@@ -2643,6 +2714,7 @@ function buildGraphData() {
       hasspn: obj.hasspn ?? principal?.hasspn ?? false,
       unconstrained: obj.unconstrained ?? principal?.unconstrained ?? false,
       objectid: obj.objectid || '',
+      dontreqpreauth: obj.dontreqpreauth ?? principal?.dontreqpreauth ?? false,
     });
     return key;
   };
@@ -2729,6 +2801,89 @@ function buildAttackPathLinks() {
   return { pathKeys, pairKeys, exactPairs, pathNodeSet };
 }
 
+function gIsSmartNode(n) {
+  if (!n) return false;
+  const name = `${n.label || ''} ${n.id || ''}`;
+  return n.owned || n.onPath || n.type === 'dc' || n.type === 'Domain' || n.type === 'gmsa' ||
+    n.type === 'GPO' || n.admincount || n.unconstrained || n.t2a4d || n.dontreqpreauth ||
+    (n.hasspn && n.type !== 'Computer') || G_SMART_NAME_RE.test(name);
+}
+
+function gSmartGraph(nodes, links) {
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const { pathKeys, pairKeys, exactPairs } = buildAttackPathLinks();
+  const important = new Set(nodes.filter(gIsSmartNode).map(n => n.id));
+  const smartLinks = [];
+  const smartNodes = new Set(important);
+
+  const addLink = l => {
+    const s = l.source?.id || l.source;
+    const t = l.target?.id || l.target;
+    smartLinks.push(l);
+    smartNodes.add(s);
+    smartNodes.add(t);
+  };
+
+  links.forEach(l => {
+    const s = l.source?.id || l.source;
+    const t = l.target?.id || l.target;
+    const pair = `${s}|${t}`;
+    const sImportant = important.has(s);
+    const tImportant = important.has(t);
+    const pathEdge = pathKeys.has(`${pair}|${l.right}`) || (!exactPairs.has(pair) && pairKeys.has(pair));
+    const highAcl = !l.structural && l.right !== 'MemberOf' && (l.sev || 9) <= 3;
+    const remoteMgmt = G_REMOTE_RIGHTS.has(l.right);
+    const importantGpLink = l.right === 'GpLink' && (sImportant || tImportant || byId[s]?.type === 'GPO' || byId[t]?.type === 'GPO');
+    const importantContains = l.right === 'Contains' && (sImportant || tImportant) &&
+      !(['User','Computer','gmsa'].includes(byId[t]?.type) && !tImportant);
+    const importantMember = l.right === 'MemberOf' && (sImportant || tImportant || pathEdge);
+    if (pathEdge || highAcl || remoteMgmt || importantGpLink || importantContains || importantMember) addLink(l);
+  });
+
+  return {
+    nodes: nodes.filter(n => smartNodes.has(n.id)),
+    links: smartLinks,
+  };
+}
+
+function gEdgeFilterDefaults() {
+  return Object.fromEntries(G_FILTER_DEFS.map(f => [f.key, true]));
+}
+
+function gEdgeFilters() {
+  if (!G.edgeFilters) G.edgeFilters = gEdgeFilterDefaults();
+  return G.edgeFilters;
+}
+
+function gEdgeFiltersChanged() {
+  const filters = gEdgeFilters();
+  return G_FILTER_DEFS.some(f => filters[f.key] === false);
+}
+
+function gEdgeMatchesFilter(l, key, pathInfo) {
+  const source = l.source?.id || l.source;
+  const target = l.target?.id || l.target;
+  const pair = `${source}|${target}`;
+  const pathEdge = pathInfo.pathKeys.has(`${pair}|${l.right}`) ||
+    (!pathInfo.exactPairs.has(pair) && pathInfo.pairKeys.has(pair));
+  if (key === 'path') return pathEdge;
+  if (key === 'memberof') return l.right === 'MemberOf';
+  if (key === 'contains') return l.right === 'Contains';
+  if (key === 'gplink') return l.right === 'GpLink';
+  if (key === 'critical') return !l.structural && l.right !== 'MemberOf' && (l.sev || 9) <= 2;
+  if (key === 'write') return G_WRITE_RIGHTS.has(l.right);
+  if (key === 'delegation') return G_DELEG_RIGHTS.has(l.right);
+  if (key === 'remote') return G_REMOTE_RIGHTS.has(l.right);
+  return false;
+}
+
+function gPassesEdgeFilters(l, pathInfo) {
+  const filters = gEdgeFilters();
+  const matched = G_FILTER_DEFS.filter(f => gEdgeMatchesFilter(l, f.key, pathInfo)).map(f => f.key);
+  if (!matched.length) return true;
+  return matched.some(key => filters[key] !== false);
+}
+
 function renderGraphTab() {
   const container = document.getElementById('graphView');
   if (!S.principals.length) {
@@ -2747,7 +2902,7 @@ function renderGraphTab() {
 }
 
 function gSyncToolbarState() {
-  const modeIds = {all:'gBtnAll', paths:'gBtnPath', owned:'gBtnOwned'};
+  const modeIds = {smart:'gBtnSmart', all:'gBtnAll', paths:'gBtnPath', owned:'gBtnOwned', focus:'gBtnFocus'};
   const edgeIds = {all:'gEdgeAll', acl:'gEdgeAcl', structure:'gEdgeStruct'};
   document.querySelectorAll('.g-btn[id^=gBtn]').forEach(b=>{
     b.classList.toggle('active', b.id === modeIds[G.mode]);
@@ -2755,6 +2910,7 @@ function gSyncToolbarState() {
   document.querySelectorAll('.g-btn[id^=gEdge]').forEach(b=>{
     b.classList.toggle('active', b.id === edgeIds[G.edgeLayer]);
   });
+  gSyncEdgeFilterState();
 }
 
 function initGraphSVG(container) {
@@ -2764,18 +2920,28 @@ function initGraphSVG(container) {
   // Toolbar
   container.insertAdjacentHTML('beforeend', `
     <div class="g-toolbar">
-      <button class="g-btn active" id="gBtnAll"   onclick="gSetMode('all')">Full graph</button>
+      <button class="g-btn active" id="gBtnSmart" onclick="gSetMode('smart')">Smart</button>
+      <button class="g-btn"        id="gBtnAll"   onclick="gSetMode('all')">Full graph</button>
       <button class="g-btn"        id="gBtnPath"  onclick="gSetMode('paths')">Attack paths only</button>
       <button class="g-btn"        id="gBtnOwned" onclick="gSetMode('owned')">Owned + neighbors</button>
+      <button class="g-btn"        id="gBtnFocus" onclick="gSetMode('focus')">Focus selected</button>
       <span style="width:1px;background:var(--border2);margin:0 2px"></span>
       <button class="g-btn active" id="gEdgeAll"    onclick="gSetEdgeLayer('all')">All edges</button>
       <button class="g-btn"        id="gEdgeAcl"    onclick="gSetEdgeLayer('acl')">ACL</button>
       <button class="g-btn"        id="gEdgeStruct" onclick="gSetEdgeLayer('structure')">Structure</button>
       <span style="width:1px;background:var(--border2);margin:0 2px"></span>
+      <button class="g-btn" id="gFilterToggle" onclick="gToggleEdgeFilterPanel()">Edge filters</button>
+      <span style="width:1px;background:var(--border2);margin:0 2px"></span>
       <button class="g-btn" onclick="gZoomBy(1.3)">+</button>
       <button class="g-btn" onclick="gZoomBy(.77)">−</button>
       <button class="g-btn" onclick="gZoomFit()">⊡</button>
       <button class="g-btn danger" onclick="gClearSel()">Clear all</button>
+    </div>
+  `);
+  container.insertAdjacentHTML('beforeend', `
+    <div class="g-filter-panel hidden" id="gFilterPanel">
+      ${G_FILTER_DEFS.map(f => `<button class="g-filter-btn active" id="gFilt_${f.key}" onclick="gToggleEdgeFilter('${f.key}')">${f.label}</button>`).join('')}
+      <button class="g-filter-btn" onclick="gResetEdgeFilters()">Reset</button>
     </div>
   `);
   gSyncToolbarState();
@@ -2842,14 +3008,6 @@ function initGraphSVG(container) {
   fm.append('feMergeNode').attr('in','b');
   fm.append('feMergeNode').attr('in','SourceGraphic');
 
-  [1,2,3,4].forEach(sev => {
-    defs.append('marker').attr('id',`gArr${sev}`)
-      .attr('viewBox','0 -4 8 8').attr('refX',30).attr('refY',0)
-      .attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
-      .append('path').attr('d','M0,-4L8,0L0,4')
-      .attr('fill',G_SEV_COLOR[sev]).attr('opacity',.82);
-  });
-
   // zoom
   const zoom = d3.zoom().scaleExtent([.04,6])
     .on('zoom', e => root.attr('transform', e.transform));
@@ -2869,7 +3027,7 @@ function initGraphSVG(container) {
   // Keep the current graph focus when clicking empty canvas space.
   svg.on('click', () => { G.lastAct = Date.now(); hideEdgeTip(); });
 
-  G.mode = G.mode || 'all';
+  G.mode = G.mode || 'smart';
   G.initialized = true;
 
   // pulse interval
@@ -3019,7 +3177,11 @@ function drawGraph(nodes, links, container) {
 
   // Filter by mode
   let visNodes = nodes, visLinks = links;
-  if (G.mode === 'paths') {
+  if (G.mode === 'smart') {
+    const smart = gSmartGraph(nodes, links);
+    visNodes = smart.nodes;
+    visLinks = smart.links;
+  } else if (G.mode === 'paths') {
     const { pathKeys, pairKeys, exactPairs, pathNodeSet } = buildAttackPathLinks();
     visLinks = links.filter(l => {
       const s = l.source?.id || l.source;
@@ -3042,6 +3204,20 @@ function drawGraph(nodes, links, container) {
     visNodes = nodes.filter(n => connSet.has(n.id));
     const visSet = new Set(visNodes.map(n=>n.id));
     visLinks = links.filter(l => visSet.has(l.source?.id||l.source) && visSet.has(l.target?.id||l.target));
+  } else if (G.mode === 'focus') {
+    const focusSet = new Set(gVisualFocusSet());
+    if (!focusSet.size && G.selNode) focusSet.add(G.selNode);
+    const connSet = new Set(focusSet);
+    visLinks = links.filter(l => {
+      const s=l.source?.id||l.source, t=l.target?.id||l.target;
+      const keep = focusSet.has(s) || focusSet.has(t);
+      if (keep) {
+        connSet.add(s);
+        connSet.add(t);
+      }
+      return keep;
+    });
+    visNodes = nodes.filter(n => connSet.has(n.id));
   }
 
   if (G.edgeLayer === 'acl') {
@@ -3060,6 +3236,18 @@ function drawGraph(nodes, links, container) {
       edgeNodeSet.add(l.target?.id || l.target);
     });
     visNodes = visNodes.filter(n => edgeNodeSet.has(n.id));
+  }
+  if (gEdgeFiltersChanged()) {
+    const pathInfo = buildAttackPathLinks();
+    visLinks = visLinks.filter(l => gPassesEdgeFilters(l, pathInfo));
+    const filterNodeSet = new Set();
+    visLinks.forEach(l => {
+      filterNodeSet.add(l.source?.id || l.source);
+      filterNodeSet.add(l.target?.id || l.target);
+    });
+    gVisualFocusSet().forEach(id => filterNodeSet.add(id));
+    if (G.selNode) filterNodeSet.add(G.selNode);
+    visNodes = visNodes.filter(n => filterNodeSet.has(n.id));
   }
 
   // Deduplicate exact links only. Keep distinct rights between the same nodes.
@@ -3117,18 +3305,21 @@ function drawGraph(nodes, links, container) {
     .attr('stroke', d => G_SEV_COLOR[d.sev])
     .attr('stroke-width', 1.2)
     .attr('stroke-opacity', .05)
-    .attr('stroke-dasharray', d => d.structural ? '4 5' : null)
-    .attr('marker-end', d => `url(#gArr${d.sev})`);
+    .attr('stroke-dasharray', d => d.structural ? '4 5' : null);
 
-  // Invisible wide hit area on top of each edge for click tooltips
-  const linkHit = linkLayer.selectAll('path.g-link-hit')
-    .data(simLinks).enter().append('path')
-    .attr('class','g-link-hit')
+  // Dedicated arrowheads are the click target for edge tooltips.
+  const arrowLayer = root.append('g');
+  const linkArrows = arrowLayer.selectAll('polygon.g-arrow')
+    .data(simLinks).enter().append('polygon')
+    .attr('class','g-arrow')
     .attr('data-key', d => d._key)
     .attr('data-pair', d => d._pairKey)
-    .attr('fill','none')
-    .attr('stroke','transparent')
-    .attr('stroke-width', 14)
+    .attr('points','0,-6 12,0 0,6')
+    .attr('fill', d => G_SEV_COLOR[d.sev])
+    .attr('fill-opacity', .82)
+    .attr('stroke', '#030810')
+    .attr('stroke-width', 1)
+    .attr('stroke-linejoin','round')
     .style('cursor','pointer')
     .on('click', (e, d) => {
       e.stopPropagation();
@@ -3140,6 +3331,7 @@ function drawGraph(nodes, links, container) {
       }
       linkPaths.filter(l => l._key === d._key)
         .attr('stroke-width', 3).attr('stroke-opacity', 1);
+      linkArrows.filter(l => l._key === d._key).attr('fill-opacity', 1);
       showEdgeTip(e, d);
     });
 
@@ -3225,7 +3417,21 @@ function drawGraph(nodes, links, container) {
         return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
       };
       linkPaths.attr('d', pathD);
-      linkHit.attr('d', pathD);
+      linkArrows.attr('transform', d => {
+        const sx=d.source.x,sy=d.source.y,tx=d.target.x,ty=d.target.y;
+        const dx=tx-sx,dy=ty-sy,len=Math.hypot(dx,dy)||1;
+        const curve = d._curveOffset ?? 0;
+        const mx=(sx+tx)/2-dy/len*(16 + curve), my=(sy+ty)/2+dx/len*(16 + curve);
+        const endPad=(G_NODE_RADIUS[d.target.type]||14)+7;
+        const t=Math.max(.55, Math.min(.9, 1 - endPad/len));
+        const u=1-t;
+        const x=u*u*sx+2*u*t*mx+t*t*tx;
+        const y=u*u*sy+2*u*t*my+t*t*ty;
+        const ddx=2*u*(mx-sx)+2*t*(tx-mx);
+        const ddy=2*u*(my-sy)+2*t*(ty-my);
+        const angle=Math.atan2(ddy, ddx)*180/Math.PI;
+        return `translate(${x},${y}) rotate(${angle}) translate(-6,0)`;
+      });
       linkLabels
         .attr('x',d=>{
           const sx=d.source.x,sy=d.source.y,tx=d.target.x,ty=d.target.y;
@@ -3245,7 +3451,7 @@ function drawGraph(nodes, links, container) {
   G.simLinks  = simLinks;
   G.nById     = nById;
   G.linkPaths  = linkPaths;
-  G.linkHit    = linkHit;
+  G.linkArrows = linkArrows;
   G.linkLabels = linkLabels;
   G.nodeGs     = nodeGs;
   G.hoverFocusNode = null;
@@ -3287,6 +3493,7 @@ function gPaintPassiveGraph() {
     G.root.selectAll('.g-ring').attr('opacity', .3);
   }
   if (G.linkPaths) G.linkPaths.attr('stroke-opacity', .05).attr('stroke-width', 1.2);
+  if (G.linkArrows) G.linkArrows.attr('fill-opacity', .18);
   if (G.linkLabels) G.linkLabels.attr('opacity', .04);
 }
 
@@ -3326,6 +3533,9 @@ function gApplyVisualFocus(simLinks) {
     G.linkPaths
       .attr('stroke-opacity', l=>gLinkTouchesActive(l) ? .93 : .05)
       .attr('stroke-width',   l=>gLinkTouchesActive(l) ? 2.6 : 1.2);
+  }
+  if (G.linkArrows) {
+    G.linkArrows.attr('fill-opacity', l=>gLinkTouchesActive(l) ? .92 : .18);
   }
   if (G.linkLabels) {
     G.linkLabels.attr('opacity', l=>gLinkTouchesActive(l) ? .9 : .04);
@@ -3407,6 +3617,7 @@ function gOnNodeClick(d, simLinks, simNodes) {
   clearGraphContextFocus();
   clearGraphSearchFocus();
   G.searchFocusNode = null;
+  G.hoverPanelPrev = null;
   if (gVisualFocusSet().has(d.id)) {
     gRemoveVisualFocus(d.id, simLinks);
     if (G.selNode === d.id) {
@@ -3432,6 +3643,8 @@ function gFocusNode(id, event) {
     event.preventDefault();
     event.stopPropagation();
   }
+  G.hoverPanelPrev = null;
+  G.hoverFocusNode = null;
   const visible = G.simNodes?.find(n => n.id === id);
   if (visible) {
     gOnNodeClick(visible, G.simLinks || [], G.simNodes || []);
@@ -3559,6 +3772,14 @@ function gToggleInfoSection(key, event) {
 
 function gOnHover(e,d) {
   gSetHoverPreviewFocus(d.id, G.simLinks || []);
+  const panel = document.getElementById('gInfo');
+  if (!G.hoverPanelPrev && panel) {
+    G.hoverPanelPrev = {
+      selNode: G.selNode,
+      hidden: panel.classList.contains('hidden'),
+    };
+  }
+  showGInfo(d, G.simLinks || [], {preview:true});
   const t = document.getElementById('tip');
   if (!t) return;
   t.textContent = `${d.label} — ${d.type}${d.owned?' [OWNED]':''}`;
@@ -3569,6 +3790,18 @@ function gOnHover(e,d) {
 function gOnHoverEnd() {
   G.hoverFocusNode = null;
   gApplyVisualFocus(G.simLinks || []);
+  const prev = G.hoverPanelPrev;
+  G.hoverPanelPrev = null;
+  if (prev) {
+    G.selNode = prev.selNode;
+    if (prev.hidden || !prev.selNode) {
+      document.getElementById('gInfo')?.classList.add('hidden');
+    } else {
+      const selected = G.simNodes?.find(n => n.id === prev.selNode) || G.allNById?.[prev.selNode];
+      if (selected) showGInfo(selected, G.simLinks || []);
+      else document.getElementById('gInfo')?.classList.add('hidden');
+    }
+  }
   document.getElementById('tip')?.classList.remove('show');
 }
 
@@ -3585,8 +3818,10 @@ function gClearSel() {
   document.getElementById('gPathBar').style.display='none';
 }
 
-function showGInfo(d, simLinks) {
-  G.selNode = d.id;
+function showGInfo(d, simLinks, opts={}) {
+  if (!opts.preview) G.selNode = d.id;
+  const isOwned = S.owned.has(d.id) || d.owned;
+  d = {...d, owned:isOwned};
   document.getElementById('gIIcon').textContent = G_NODE_ICON[d.type]||'👤';
   document.getElementById('gIName').textContent = d.label;
   document.getElementById('gIType').textContent = d.type+(d.owned?' // OWNED ✓':'');
@@ -3597,6 +3832,10 @@ function showGInfo(d, simLinks) {
   if(d.t2a4d)      rows.push(['TrustedToAuth','⚡ T2A4D','yellow']);
   if(d.unconstrained) rows.push(['Delegation','UNCONSTRAINED ⚡','red']);
   if(d.owned)      rows.push(['Status','OWNED ✓','green']);
+  const canStart = ['User','Computer','gmsa','dc'].includes(d.type);
+  const startAction = canStart
+    ? `<button class="g-owned-action ${d.owned?'remove':''}" data-node="${escAttr(d.id)}" onclick="toggleGraphStartingPoint(this.dataset.node, event)">${d.owned?'Remove starting point':'Mark as starting point'}</button>`
+    : `<div class="g-owned-note">Only users, computers and gMSA accounts can be marked as starting points.</div>`;
 
   const fullLinks = G.allLinks || simLinks.map(l => ({
     ...l,
@@ -3633,7 +3872,7 @@ function showGInfo(d, simLinks) {
     rows.push(['Located in', nodeName(d.bucketSource), '']);
     document.getElementById('gIBody').innerHTML=rows.map(([l,v,c])=>
       `<div class="g-info-row"><span style="color:var(--dim2)">${escHtml(l)}</span><span class="ip-val ${c}">${v}</span></div>`
-    ).join('');
+    ).join('') + startAction;
     const items = d.bucketItems || [];
     const key = `${d.id}|Aggregated objects`;
     const expanded = !!G.infoExpanded[key];
@@ -3671,7 +3910,7 @@ function showGInfo(d, simLinks) {
 
   document.getElementById('gIBody').innerHTML=rows.map(([l,v,c])=>
     `<div class="g-info-row"><span style="color:var(--dim2)">${escHtml(l)}</span><span class="ip-val ${c}">${v}</span></div>`
-  ).join('');
+  ).join('') + startAction;
 
   const html = [
     section('Contains', contains, l => edgeRow(l, l.target)),
@@ -3709,7 +3948,7 @@ function showGPathBar(path) {
 
 function gSetMode(mode) {
   G.mode = mode;
-  gResetGraphVisualState();
+  hideEdgeTip();
   // Don't reset G.initialized — keep the SVG/zoom/intervals alive, just redraw nodes
   gSyncToolbarState();
   if (!G.svg) {
@@ -3723,11 +3962,54 @@ function gSetMode(mode) {
 
 function gSetEdgeLayer(layer) {
   G.edgeLayer = layer;
-  gResetGraphVisualState();
+  hideEdgeTip();
   gSyncToolbarState();
   if (!G.svg) {
     renderGraphTab();
   } else {
+    const { nodes, links } = buildGraphData();
+    const container = document.getElementById('graphView');
+    drawGraph(nodes, links, container);
+  }
+}
+
+function gToggleEdgeFilterPanel() {
+  G.filterPanelOpen = !G.filterPanelOpen;
+  gSyncEdgeFilterState();
+}
+
+function gSyncEdgeFilterState() {
+  const panel = document.getElementById('gFilterPanel');
+  const toggle = document.getElementById('gFilterToggle');
+  if (panel) panel.classList.toggle('hidden', !G.filterPanelOpen);
+  if (toggle) {
+    toggle.classList.toggle('active', G.filterPanelOpen || gEdgeFiltersChanged());
+    toggle.textContent = gEdgeFiltersChanged() ? 'Filters active' : 'Edge filters';
+  }
+  const filters = gEdgeFilters();
+  G_FILTER_DEFS.forEach(f => {
+    const btn = document.getElementById(`gFilt_${f.key}`);
+    if (btn) btn.classList.toggle('active', filters[f.key] !== false);
+  });
+}
+
+function gToggleEdgeFilter(key) {
+  const filters = gEdgeFilters();
+  filters[key] = filters[key] === false;
+  hideEdgeTip();
+  gSyncEdgeFilterState();
+  if (G.svg) {
+    const { nodes, links } = buildGraphData();
+    const container = document.getElementById('graphView');
+    drawGraph(nodes, links, container);
+  }
+}
+
+function gResetEdgeFilters() {
+  G.edgeFilters = gEdgeFilterDefaults();
+  hideEdgeTip();
+  gSyncEdgeFilterState();
+  if (G.svg) {
     const { nodes, links } = buildGraphData();
     const container = document.getElementById('graphView');
     drawGraph(nodes, links, container);
@@ -3749,10 +4031,14 @@ let edgeTipTimer   = null;
 let edgeTipPinned  = false; // true when mouse is over the tooltip itself
 
 function restorePinnedEdgeVisual() {
-  if (!G.edgeTipKey || !G.linkPaths) return;
+  if (!G.edgeTipKey) return;
   G.linkPaths.filter(l => l._key === G.edgeTipKey)
     .attr('stroke-width', l => gLinkTouchesActive(l) ? 2.6 : 1.2)
     .attr('stroke-opacity', l => gLinkTouchesActive(l) ? .93 : .05);
+  if (G.linkArrows) {
+    G.linkArrows.filter(l => l._key === G.edgeTipKey)
+      .attr('fill-opacity', l => gLinkTouchesActive(l) ? .92 : .18);
+  }
 }
 
 function showEdgeTip(e, link) {
@@ -3895,7 +4181,7 @@ function showLoading(msg) {
 if __name__ == '__main__':
     print("""
 +------------------------------------------------------+
-|  BOBER EDITION v1.4.1 -- Attack Path Analyzer  🦫     |
+|  BOBER EDITION v1.4.2 -- Attack Path Analyzer  🦫     |
 |  http://localhost:5000                               |
 |  Ctrl+C -> stop                                  |
 +------------------------------------------------------+
