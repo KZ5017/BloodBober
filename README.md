@@ -17,7 +17,7 @@ Special thanks for the Bober Edition version.
 ### Linux
 
 ```bash
-pipx install "$(ls -t dist/blood_bober-*.whl | head -n 1)"
+pipx install "$(printf '%s\n' dist/blood_bober-*.whl | sort -V | tail -n 1)"
 ```
 
 ### Windows / PowerShell

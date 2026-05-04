@@ -47,7 +47,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $Wheel = Get-ChildItem -Path (Join-Path $Root "dist") -Filter "blood_bober-*.whl" |
-    Sort-Object LastWriteTimeUtc -Descending |
+    Sort-Object @{ Expression = {
+        [version](($_.BaseName -replace '^blood_bober-', '' -replace '-py3-none-any$', ''))
+    } } -Descending |
     Select-Object -First 1
 if (Test-Path $Wheel) {
     icacls $Wheel /grant "${env:USERNAME}:(F)" | Out-Null
