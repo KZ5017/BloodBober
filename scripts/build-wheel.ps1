@@ -46,7 +46,9 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$Wheel = Join-Path $Root "dist\blood_bober-1.4.3-py3-none-any.whl"
+$Wheel = Get-ChildItem -Path (Join-Path $Root "dist") -Filter "blood_bober-*.whl" |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1
 if (Test-Path $Wheel) {
     icacls $Wheel /grant "${env:USERNAME}:(F)" | Out-Null
     if ($LASTEXITCODE -ne 0) {

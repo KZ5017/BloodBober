@@ -4306,7 +4306,7 @@ function showLoading(msg) {
 if __name__ == '__main__':
     print("""
 +------------------------------------------------------+
-|  BLOODBOBER v1.4.3 -- Attack Path Analyzer  🦫        |
+|  BLOODBOBER v1.4.4 -- Attack Path Analyzer  🦫        |
 |  http://localhost:5000                               |
 |  Ctrl+C -> stop                                  |
 +------------------------------------------------------+

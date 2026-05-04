@@ -16,8 +16,8 @@ Special thanks for the Bober Edition version.
 
 Install the wheel with `pipx`:
 
-```bash
-pipx install dist/blood_bober-1.4.3-py3-none-any.whl
+```powershell
+pipx install (Get-ChildItem dist/blood_bober-*.whl | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
 ```
 
 For the optional production WSGI server dependency:
