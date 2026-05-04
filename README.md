@@ -23,7 +23,7 @@ pipx install "$(printf '%s\n' dist/blood_bober-*.whl | sort -V | tail -n 1)"
 ### Windows / PowerShell
 
 ```powershell
-pipx install (Get-ChildItem dist/blood_bober-*.whl | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+pipx install (Get-ChildItem dist/blood_bober-*.whl | Sort-Object { [version](($_.BaseName -replace '^blood_bober-', '' -replace '-py3-none-any$', '')) } | Select-Object -Last 1).FullName
 ```
 
 For the optional production WSGI server dependency:
